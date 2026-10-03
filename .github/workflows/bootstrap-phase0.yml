@@ -109,19 +109,38 @@ jobs:
           Phase 0 imports the audited upstream source without gameplay alterations. Subsequent World Peace commits are expected to diverge from upstream according to `DANGER-AUDIT.md`.
           EOF
 
-      - name: Build untouched gameplay baseline
+      - name: Build untouched Forge 1.20.1 gameplay baseline
         id: upstream_build
         continue-on-error: true
         shell: bash
         run: |
-          set -o pipefail
+          set +e
           chmod +x gradlew
-          ./gradlew build --stacktrace 2>&1 | tee upstream-build.log
-          status=${PIPESTATUS[0]}
+          : > upstream-build.log
+          status=0
+
+          run_gradle() {
+            echo ">>> $*" | tee -a upstream-build.log
+            "$@" 2>&1 | tee -a upstream-build.log
+            return ${PIPESTATUS[0]}
+          }
+
+          # Match the audited upstream release workflow rather than the root CI
+          # task, which also fails on the exact upstream commit being imported.
+          run_gradle ./gradlew "Set active project to 1.20.1-forge" -q --console=plain --warning-mode=none --stacktrace || status=$?
+
+          if [ "$status" -eq 0 ]; then
+            run_gradle ./gradlew :1.20.1-forge:runData -Pmod.version=0.2.1-alpha -q --console=plain --warning-mode=none --stacktrace || status=$?
+          fi
+
+          if [ "$status" -eq 0 ]; then
+            run_gradle ./gradlew :1.20.1-forge:build -Pmod.version=0.2.1-alpha -q --console=plain --warning-mode=none --stacktrace || status=$?
+          fi
+
           echo "exit_code=$status" >> "$GITHUB_OUTPUT"
 
           {
-            echo "## Untouched upstream build diagnostic"
+            echo "## Untouched upstream Forge 1.20.1 build diagnostic"
             echo
             echo "Exit code: $status"
             echo
@@ -141,11 +160,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Stop bootstrap if untouched upstream does not build
+      - name: Stop bootstrap if untouched Forge 1.20.1 does not build
         if: steps.upstream_build.outcome != 'success'
         shell: bash
         run: |
-          echo "Untouched upstream baseline failed to build. Import remains uncommitted."
+          echo "Untouched upstream Forge 1.20.1 baseline failed to build. Import remains uncommitted."
           exit 1
 
       - name: Upload baseline build artifact
@@ -153,7 +172,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: hbm-world-peace-phase0-baseline
-          path: build/libs/*.jar
+          path: versions/1.20.1-forge/build/libs/*.jar
           if-no-files-found: error
           retention-days: 14
 
