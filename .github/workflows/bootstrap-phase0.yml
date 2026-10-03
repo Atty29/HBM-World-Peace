@@ -1,0 +1,153 @@
+name: Phase 0 Upstream Bootstrap
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - '.github/workflows/bootstrap-phase0.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  import-and-build:
+    if: github.repository == 'Atty29/HBM-World-Peace'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout World Peace repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: Import audited upstream baseline
+        shell: bash
+        env:
+          UPSTREAM_SHA: 0365cef5956016913095eeeb9366f26c601ca9a0
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/hbm-upstream /tmp/hbm-import
+          git clone --no-tags https://github.com/Raptor324/HBM-Modernized.git /tmp/hbm-upstream
+          git -C /tmp/hbm-upstream checkout --detach "$UPSTREAM_SHA"
+          test "$(git -C /tmp/hbm-upstream rev-parse HEAD)" = "$UPSTREAM_SHA"
+
+          mkdir -p /tmp/hbm-import
+          git -C /tmp/hbm-upstream archive "$UPSTREAM_SHA" | tar -x -C /tmp/hbm-import
+
+          # Keep World Peace repository metadata/workflows separate from upstream.
+          # Preserve upstream public-facing docs under explicit UPSTREAM names.
+          rsync -a \
+            --exclude='.github/' \
+            --exclude='README.md' \
+            --exclude='README.ru.md' \
+            --exclude='SUPPORT.md' \
+            /tmp/hbm-import/ "$GITHUB_WORKSPACE/"
+
+          cp /tmp/hbm-import/README.md "$GITHUB_WORKSPACE/UPSTREAM-README.md"
+          cp /tmp/hbm-import/README.ru.md "$GITHUB_WORKSPACE/UPSTREAM-README.ru.md"
+          cp /tmp/hbm-import/SUPPORT.md "$GITHUB_WORKSPACE/UPSTREAM-SUPPORT.md"
+
+          cat > "$GITHUB_WORKSPACE/README.md" <<'EOF'
+          # HBM: World Peace
+
+          > **Keep the engineering. Remove the apocalypse.**
+
+          HBM: World Peace is a safety-focused fork of **HBM's Nuclear Tech Modernized** for Minecraft 1.20.1.
+
+          The goal is to preserve the industrial side of HBM — machines, metallurgy, chemistry, power systems, reactors, automation, tools and protective equipment — while removing strategic weapons, catastrophic map destruction, persistent radiation contamination and similar world-ending mechanics.
+
+          ## Current status
+
+          **Phase 0 — upstream baseline import.**
+
+          The gameplay source in this baseline is intentionally still the audited upstream implementation. No World Peace safety changes are claimed until later commits apply the rules in [`DANGER-AUDIT.md`](DANGER-AUDIT.md).
+
+          The baseline was imported from `Raptor324/HBM-Modernized` commit:
+
+          `0365cef5956016913095eeeb9366f26c601ca9a0`
+
+          See [`UPSTREAM.md`](UPSTREAM.md) for provenance and licensing notes. The original upstream README is preserved as [`UPSTREAM-README.md`](UPSTREAM-README.md).
+
+          ## License
+
+          This fork remains licensed under the **GNU General Public License v3.0**, matching the upstream project. See [`LICENSE`](LICENSE).
+
+          ## Project rule
+
+          **Keep the engineering. Remove the apocalypse.**
+          EOF
+
+          cat > "$GITHUB_WORKSPACE/UPSTREAM.md" <<'EOF'
+          # Upstream provenance
+
+          HBM: World Peace is a modified fork derived from:
+
+          - **Project:** HBM's Nuclear Tech Modernized
+          - **Repository:** https://github.com/Raptor324/HBM-Modernized
+          - **Imported upstream commit:** `0365cef5956016913095eeeb9366f26c601ca9a0`
+          - **Import date:** 2026-10-03
+          - **License:** GNU General Public License v3.0
+
+          The upstream `gradle.properties` at the imported revision credits the project authors as **RaptorDev, TRFFuchs, razchexlitiel, HyperiO**, with additional contributors listed there. The upstream README also acknowledges **The Bobcat** as author of the original HBM's Nuclear Tech Mod.
+
+          This repository is intentionally modified and should not be represented as an official upstream build. World Peace-specific problems should be reported here rather than to the upstream project unless the problem is independently reproduced in upstream HBM Modernized.
+
+          The original upstream English and Russian READMEs are preserved as `UPSTREAM-README.md` and `UPSTREAM-README.ru.md`. The upstream support page is preserved as `UPSTREAM-SUPPORT.md` so its original support information is not confused with support for this fork.
+
+          Phase 0 imports the audited upstream source without gameplay alterations. Subsequent World Peace commits are expected to diverge from upstream according to `DANGER-AUDIT.md`.
+          EOF
+
+      - name: Build untouched gameplay baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew build
+
+      - name: Upload baseline build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hbm-world-peace-phase0-baseline
+          path: build/libs/*.jar
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Restore exact upstream tracked files after build
+        shell: bash
+        run: |
+          set -euo pipefail
+          rsync -a \
+            --exclude='.github/' \
+            --exclude='README.md' \
+            --exclude='README.ru.md' \
+            --exclude='SUPPORT.md' \
+            /tmp/hbm-import/ "$GITHUB_WORKSPACE/"
+
+      - name: Commit verified Phase 0 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Force-stage the upstream tracked tree because upstream intentionally
+          # tracks a few paths that are also present in its .gitignore.
+          git -C /tmp/hbm-upstream ls-files -z | python3 -c 'import sys; data=sys.stdin.buffer.read().split(b"\0"); excluded=(b".github/",); out=[]; skip={b"README.md",b"README.ru.md",b"SUPPORT.md"}; [out.append(p) for p in data if p and p not in skip and not p.startswith(excluded)]; sys.stdout.buffer.write(b"\0".join(out)+b"\0")' > /tmp/upstream-paths
+          git add -f --pathspec-from-file=/tmp/upstream-paths --pathspec-file-nul
+
+          git add DANGER-AUDIT.md README.md UPSTREAM.md UPSTREAM-README.md UPSTREAM-README.ru.md UPSTREAM-SUPPORT.md .github/workflows/bootstrap-phase0.yml
+
+          git commit -m "Phase 0: import verified HBM Modernized baseline"
+          git push origin HEAD:main
