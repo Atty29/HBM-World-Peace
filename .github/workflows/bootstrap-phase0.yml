@@ -110,13 +110,46 @@ jobs:
           EOF
 
       - name: Build untouched gameplay baseline
+        id: upstream_build
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
+          set -o pipefail
           chmod +x gradlew
-          ./gradlew build
+          ./gradlew build --stacktrace 2>&1 | tee upstream-build.log
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Untouched upstream build diagnostic"
+            echo
+            echo "Exit code: $status"
+            echo
+            echo '```text'
+            tail -n 250 upstream-build.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "$status"
+
+      - name: Upload upstream build diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase0-upstream-build-log
+          path: upstream-build.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Stop bootstrap if untouched upstream does not build
+        if: steps.upstream_build.outcome != 'success'
+        shell: bash
+        run: |
+          echo "Untouched upstream baseline failed to build. Import remains uncommitted."
+          exit 1
 
       - name: Upload baseline build artifact
+        if: steps.upstream_build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: hbm-world-peace-phase0-baseline
@@ -125,6 +158,7 @@ jobs:
           retention-days: 14
 
       - name: Restore exact upstream tracked files after build
+        if: steps.upstream_build.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -136,6 +170,7 @@ jobs:
             /tmp/hbm-import/ "$GITHUB_WORKSPACE/"
 
       - name: Commit verified Phase 0 baseline
+        if: steps.upstream_build.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
