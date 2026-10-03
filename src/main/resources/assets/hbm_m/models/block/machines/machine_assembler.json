@@ -1,0 +1,63 @@
+{
+  "loader": "hbm_m:machine_assembler_loader",
+  "parts": {
+    "Body": {
+      "model": "hbm_m:models/block/machines/machine_assembler.obj",
+      "texture": "hbm_m:block/machine/assembler_base_new"
+    },
+    "Slider": {
+      "model": "hbm_m:models/block/machines/machine_assembler_slider.obj",
+      "texture": "hbm_m:block/machine/assembler_slider_new"
+    },
+    "Arm": {
+      "model": "hbm_m:models/block/machines/machine_assembler_arm.obj",
+      "texture": "hbm_m:block/machine/assembler_arm_new"
+    },
+    "Cog": {
+      "model": "hbm_m:models/block/machines/machine_assembler_cog.obj",
+      "texture": "hbm_m:block/machine/assembler_cog_new"
+    }
+  },
+  "flip_v": true,
+  "render_type": "minecraft:cutout",
+  "textures": {
+    "particle": "hbm_m:block/machine/assembler_base_new"
+  },
+  "transform": {
+    "translation": [1.0, 0.0, 2.0],
+    "rotation": [0, 0, 0],
+    "scale": 1.0
+  },
+  "display": {
+    "gui": {
+      "rotation": [ 30, 45, 0 ],
+      "translation": [ -4, -0.7, 0 ],
+      "scale": [ 0.2, 0.2, 0.2 ]
+    },
+    "ground": {
+      "rotation": [ 0, 0, 0 ],
+      "translation": [ 0, 3, 0 ],
+      "scale": [ 0.25, 0.25, 0.25 ]
+    },
+    "fixed": {
+      "rotation": [ 0, 180, 0 ],
+      "translation": [ 0, 0, 0 ],
+      "scale": [ 0.5, 0.5, 0.5 ]
+    },
+    "thirdperson_righthand": {
+      "rotation": [ 75, 315, 0 ],
+      "translation": [ 0, 2.5, 0 ],
+      "scale": [ 0.15, 0.15, 0.15 ]
+    },
+    "firstperson_righthand": {
+      "rotation": [ 0, 315, 0 ],
+      "translation": [ -1, 2.5, 0 ],
+      "scale": [ 0.2, 0.2, 0.2 ]
+    },
+    "head": {
+      "rotation": [ 0, 180, 0 ],
+      "translation": [ 0, 13, 7 ],
+      "scale": [ 1, 1, 1 ]
+    }
+  }
+}

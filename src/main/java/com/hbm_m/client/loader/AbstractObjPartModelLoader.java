@@ -1,0 +1,257 @@
+//? if forge {
+package com.hbm_m.client.loader;
+
+import java.util.HashMap;
+import java.util.Set;
+import java.util.function.Function;
+
+import org.jetbrains.annotations.NotNull;
+
+import com.google.gson.JsonDeserializationContext;
+import com.google.gson.JsonObject;
+import com.hbm_m.main.MainRegistry;
+import com.mojang.math.Transformation;
+
+import net.minecraft.client.renderer.block.model.ItemOverrides;
+import net.minecraft.client.renderer.block.model.ItemTransforms;
+import net.minecraft.client.renderer.texture.TextureAtlasSprite;
+import net.minecraft.client.resources.model.BakedModel;
+import net.minecraft.client.resources.model.Material;
+import net.minecraft.client.resources.model.ModelBaker;
+import net.minecraft.client.resources.model.ModelState;
+import net.minecraft.client.resources.model.UnbakedModel;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.util.GsonHelper;
+import net.minecraftforge.client.model.geometry.IGeometryBakingContext;
+import net.minecraftforge.client.model.geometry.IGeometryLoader;
+import net.minecraftforge.client.model.geometry.IUnbakedGeometry;
+import net.minecraftforge.client.model.obj.ObjLoader;
+import net.minecraftforge.client.model.obj.ObjModel;
+
+public abstract class AbstractObjPartModelLoader<T extends BakedModel> implements IGeometryLoader<AbstractObjPartModelLoader.ObjPartGeometry<T>> {
+
+    protected abstract Set<String> getPartNames(JsonObject jsonObject);
+    protected abstract T createBakedModel(HashMap<String, BakedModel> bakedParts, 
+                                          ItemTransforms transforms,
+                                          ResourceLocation modelLocation);
+    /**
+     * By default OBJ loader flips V to match vanilla/block atlas convention.
+     * Specific models can override if their UVs were authored unflipped.
+     */
+    protected boolean flipV() { return true; }
+
+    /**
+     * Опционально переназначает атлас для текстуры. По умолчанию null (оставляем как есть).
+     */
+    protected ResourceLocation mapAtlasForTexture(ResourceLocation texture) { return null; }
+
+    @Override
+    public ObjPartGeometry<T> read(JsonObject jsonObject, JsonDeserializationContext deserializationContext) {
+        String modelStr = GsonHelper.getAsString(jsonObject, "model");
+        MainRegistry.LOGGER.debug("{}: model string='{}'", this.getClass().getSimpleName(), modelStr);
+        ResourceLocation model = ResourceLocation.tryParse(modelStr);
+        Set<String> partNames = getPartNames(jsonObject);
+        boolean flipV = GsonHelper.getAsBoolean(jsonObject, "flip_v", true);
+        return new ObjPartGeometry<>(model, partNames, flipV, this);
+    }
+
+    public static class ObjPartGeometry<T extends BakedModel> implements IUnbakedGeometry<ObjPartGeometry<T>> {
+        private final ResourceLocation modelLocation;
+        private final Set<String> partNames;
+        private final boolean flipV;
+        private final AbstractObjPartModelLoader<T> loader;
+
+        public ObjPartGeometry(ResourceLocation modelLocation, Set<String> partNames, boolean flipV,
+                               AbstractObjPartModelLoader<T> loader) {
+            this.modelLocation = modelLocation;
+            this.partNames = partNames;
+            this.flipV = flipV;
+            this.loader = loader;
+        }
+
+        @Override
+        public void resolveParents(Function<ResourceLocation, UnbakedModel> modelGetter, IGeometryBakingContext context) {
+        }
+
+        @Override
+        public BakedModel bake(IGeometryBakingContext context, ModelBaker baker,
+                             Function<Material, TextureAtlasSprite> spriteGetter,
+                             ModelState modelState, ItemOverrides overrides,
+                             ResourceLocation modelName) {
+            ObjModel model = loadObjModel();
+            HashMap<String, BakedModel> bakedParts = bakeParts(model, context, baker, spriteGetter, overrides, modelName);
+            ensureBasePart(model, bakedParts, context, baker, spriteGetter, overrides, modelName);
+
+            MainRegistry.LOGGER.info("{}: Total baked parts: {}", loader.getClass().getSimpleName(), bakedParts.size());
+            return loader.createBakedModel(bakedParts, context.getTransforms(), modelName);
+        }
+
+        private ObjModel loadObjModel() {
+            try {
+                ObjModel model = ObjLoader.INSTANCE.loadModel(
+                    new ObjModel.ModelSettings(modelLocation, flipV, false, true, true, null)
+                );
+                MainRegistry.LOGGER.info("{}: Successfully loaded OBJ model: {}",
+                    loader.getClass().getSimpleName(), modelLocation);
+                return model;
+            } catch (Exception e) {
+                MainRegistry.LOGGER.error("Failed to load OBJ model: " + modelLocation, e);
+                throw new RuntimeException("Не удалось загрузить OBJ модель: " + modelLocation, e);
+            }
+        }
+
+        private HashMap<String, BakedModel> bakeParts(ObjModel model, IGeometryBakingContext context,
+                                                      ModelBaker baker, Function<Material, TextureAtlasSprite> spriteGetter,
+                                                      ItemOverrides overrides, ResourceLocation modelName) {
+            HashMap<String, BakedModel> bakedParts = new HashMap<>();
+            ModelState identityState = createIdentityState();
+
+            MainRegistry.LOGGER.info("{}: Baking {} parts: {}", 
+                loader.getClass().getSimpleName(), partNames.size(), partNames);
+
+            for (String partName : partNames) {
+                SinglePartBakingContext partContext = new SinglePartBakingContext(context, partName, loader);
+                BakedModel bakedPart = model.bake(partContext, baker, spriteGetter,
+                    identityState, overrides, modelName);
+                bakedParts.put(partName, bakedPart);
+                
+                // Логируем информацию о запечённой части
+                if (bakedPart != null) {
+                    int quadCount = 0;
+                    for (net.minecraft.core.Direction dir : net.minecraft.core.Direction.values()) {
+                        quadCount += bakedPart.getQuads(null, dir, net.minecraft.util.RandomSource.create(42)).size();
+                    }
+                    quadCount += bakedPart.getQuads(null, null, net.minecraft.util.RandomSource.create(42)).size();
+                    MainRegistry.LOGGER.info("{}: Baked part '{}' -> {} quads, model: {}", 
+                        loader.getClass().getSimpleName(), partName, quadCount, bakedPart.getClass().getSimpleName());
+                } else {
+                    MainRegistry.LOGGER.warn("{}: Part '{}' baked to NULL!", 
+                        loader.getClass().getSimpleName(), partName);
+                }
+            }
+
+            return bakedParts;
+        }
+
+        private void ensureBasePart(ObjModel model, HashMap<String, BakedModel> bakedParts,
+                                   IGeometryBakingContext context, ModelBaker baker,
+                                   Function<Material, TextureAtlasSprite> spriteGetter,
+                                   ItemOverrides overrides, ResourceLocation modelName) {
+            if (!bakedParts.containsKey("Base")) {
+                MainRegistry.LOGGER.info("{}: Creating fallback 'Base' part", loader.getClass().getSimpleName());
+                BakedModel baseModel = model.bake(
+                    new SinglePartBakingContext(context, "Base", (AbstractObjPartModelLoader<?>) loader),
+                    baker, spriteGetter, createIdentityState(), overrides, modelName
+                );
+                bakedParts.put("Base", baseModel);
+                
+                if (baseModel != null) {
+                    int quadCount = 0;
+                    for (net.minecraft.core.Direction dir : net.minecraft.core.Direction.values()) {
+                        quadCount += baseModel.getQuads(null, dir, net.minecraft.util.RandomSource.create(42)).size();
+                    }
+                    quadCount += baseModel.getQuads(null, null, net.minecraft.util.RandomSource.create(42)).size();
+                    MainRegistry.LOGGER.info("{}: Fallback 'Base' part has {} quads", 
+                        loader.getClass().getSimpleName(), quadCount);
+                } else {
+                    MainRegistry.LOGGER.warn("{}: Fallback 'Base' part is NULL!", loader.getClass().getSimpleName());
+                }
+            }
+        }
+
+        private ModelState createIdentityState() {
+            return new ModelState() {
+                @Override
+                public @NotNull Transformation getRotation() {
+                    return Transformation.identity();
+                }
+            };
+        }
+    }
+
+    protected static class SinglePartBakingContext implements IGeometryBakingContext {
+        private final IGeometryBakingContext parent;
+        private final String visiblePart;
+        private final AbstractObjPartModelLoader<?> loader;
+
+        public SinglePartBakingContext(IGeometryBakingContext parent, String visiblePart, AbstractObjPartModelLoader<?> loader) {
+            this.parent = parent;
+            this.visiblePart = visiblePart;
+            this.loader = loader;
+        }
+
+        @Override public String getModelName() { return parent.getModelName(); }
+        @Override public boolean isGui3d() { return parent.isGui3d(); }
+        @Override public boolean useBlockLight() { return parent.useBlockLight(); }
+        @Override public boolean useAmbientOcclusion() { return parent.useAmbientOcclusion(); }
+        @Override public ItemTransforms getTransforms() { return parent.getTransforms(); }
+
+        @Override
+        public Material getMaterial(String name) {
+            Material mat = parent.getMaterial(name);
+
+            if (this.visiblePart.equalsIgnoreCase("Label")) {
+                if (parent.hasMaterial("label")) {
+                    mat = parent.getMaterial("label"); // Берет текстуру "label" из JSON
+                }
+            } else if (this.visiblePart.equalsIgnoreCase("Frame") || this.visiblePart.equalsIgnoreCase("Door")) {
+                if (parent.hasMaterial("default")) {
+                    mat = parent.getMaterial("default"); // Берет текстуру "default" из JSON
+                } else {
+                    // Цистерна и др.: в OBJ может быть usemtl default без ключа default в JSON —
+                    // тогда берём текстуру по имени части (frame / door).
+                    String lowerPart = this.visiblePart.toLowerCase(java.util.Locale.ROOT);
+                    if (parent.hasMaterial(lowerPart)) {
+                        mat = parent.getMaterial(lowerPart);
+                    }
+                }
+            } else {
+                // Автоматический подхват для других дверей (если имя детали совпадает с ключом текстуры в JSON)
+                String lowerPart = this.visiblePart.toLowerCase(java.util.Locale.ROOT);
+                if (parent.hasMaterial(lowerPart)) {
+                    mat = parent.getMaterial(lowerPart);
+                } else if (parent.hasMaterial("default")) {
+                    mat = parent.getMaterial("default");
+                }
+            }
+
+            if (mat == null) return null;
+            ResourceLocation overrideAtlas = loader.mapAtlasForTexture(mat.texture());
+            if (overrideAtlas != null && !overrideAtlas.equals(mat.atlasLocation())) {
+                Material remapped = new Material(overrideAtlas, mat.texture());
+
+                return remapped;
+            }
+            return mat;
+        }
+
+        @Override public Transformation getRootTransform() { return parent.getRootTransform(); }
+        @Override public boolean hasMaterial(String name) { return parent.hasMaterial(name); }
+        @Override public ResourceLocation getRenderTypeHint() { return parent.getRenderTypeHint(); }
+
+        @Override
+        public boolean isComponentVisible(String component, boolean fallback) {
+            return component.equals(this.visiblePart) ||
+                   component.startsWith(this.visiblePart + "/");
+        }
+
+    }
+}
+//?}
+
+//? if fabric {
+/*package com.hbm_m.client.loader;
+
+import com.google.gson.JsonDeserializationContext;
+import com.google.gson.JsonObject;
+
+/^*
+ * Fabric: Forge geometry/OBJ pipeline isn't available.
+ * This class exists as a stub to keep common code compiling across loaders.
+ ^/
+public abstract class AbstractObjPartModelLoader<T> {
+    public Object read(JsonObject jsonObject, JsonDeserializationContext deserializationContext) {
+        throw new UnsupportedOperationException("OBJ part model loader is not implemented on Fabric yet.");
+    }
+}
+*///?}

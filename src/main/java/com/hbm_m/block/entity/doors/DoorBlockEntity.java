@@ -1,0 +1,916 @@
+package com.hbm_m.block.entity.doors;
+
+
+import org.jetbrains.annotations.Nullable;
+
+import com.hbm_m.block.decorations.DoorBlock;
+import com.hbm_m.blockentity.ModBlockEntities;
+import com.hbm_m.client.model.variant.DoorModelRegistry;
+import com.hbm_m.client.model.variant.DoorModelSelection;
+import com.hbm_m.client.model.variant.DoorModelType;
+import com.hbm_m.client.model.variant.DoorSkin;
+import com.hbm_m.client.overlay.DoorAnimationDelayHelper;
+import com.hbm_m.client.render.DoorChunkInvalidationHelper;
+import com.hbm_m.interfaces.IMultiblockPart;
+import com.hbm_m.interfaces.IMultiblockController;
+import com.hbm_m.main.MainRegistry;
+import com.hbm_m.multiblock.MultiblockStructureHelper;
+import com.hbm_m.multiblock.PartRole;
+import com.hbm_m.sound.ClientSoundBootstrap;
+import com.hbm_m.platform.PlatformHooks;
+
+
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.protocol.Packet;
+import net.minecraft.network.protocol.game.ClientGamePacketListener;
+import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.AABB;
+// Forge-only model-data / distmarker imports intentionally removed for Fabric compilation.
+
+//? if fabric {
+/*import net.fabricmc.api.EnvType;
+import net.fabricmc.api.Environment;
+*///?} elif forge {
+import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.api.distmarker.OnlyIn;
+//?} elif neoforge {
+/*import net.neoforged.api.distmarker.Dist;
+import net.neoforged.api.distmarker.OnlyIn;
+*///?}
+
+public class DoorBlockEntity extends BlockEntity implements IMultiblockPart
+    //? if fabric {
+    /*, net.fabricmc.fabric.api.rendering.data.v1.RenderAttachmentBlockEntity
+    *///?}
+{
+    private static final String DOOR_LOOP_SOUND_FACTORY = "com.hbm_m.client.sound.DoorLoopSoundFactory";
+
+    // 0=закрыта, 1=открыта, 2=закрывается, 3=открывается
+    public byte state = 0;
+    private int openTicks = 0;
+    public long animStartTime = 0;
+    private boolean locked = false;
+    private boolean lastRedstoneState = false;
+
+    /**
+     * Текущий выбор модели и скина
+     */
+    private DoorModelSelection modelSelection = DoorModelSelection.DEFAULT;
+    
+    /**
+     * Кэшированные ModelData для производительности.
+     *
+     * <p>ВНИМАНИЕ: поле НЕ помечено @OnlyIn(Dist.CLIENT)/@Environment(EnvType.CLIENT).
+     * Раньше было, но Forge {@code RuntimeDistCleaner} удаляет @OnlyIn(Dist.CLIENT) ПОЛЯ
+     * (а не только методы) на dedicated-сервере → серверный {@code load(CompoundTag)}
+     * (m_142466_) падал с {@link NoSuchFieldError} на {@code this.cachedModelData = null;},
+     * BlockEntity skipped → Create-disassembly не могла восстановить BlockEntity двери →
+     * поезд разбирался наполовину, часть блоков пропадала бесследно. Двойная разборка —
+     * первый цикл восстанавливал BE частично (BE null), сущность contraption оставалась
+     * живой; второй цикл убивал contraption окончательно, теряя невосстановленные блоки.
+     *
+     * <p>Plain Object поле безопасно держать и на сервере (null по умолчанию, никто не
+     * мутирует на сервере). Все клиент-специфичные методы, которые пишут/читают его,
+     * остаются @OnlyIn(Dist.CLIENT) на уровне метода — runtimedistcleaner удаляет только
+     * методы, а не поля, поэтому отсутствие @OnlyIn на поле безопасно.
+     */
+    private Object cachedModelData;
+
+    private String doorDeclId;
+    
+    // Мультиблок данные
+    private BlockPos controllerPos = null;
+    private PartRole partRole = PartRole.DEFAULT;
+
+    private java.util.Set<Direction> allowedClimbSides = java.util.EnumSet.noneOf(Direction.class);
+    // См. комментарий у cachedModelData: @OnlyIn(Dist.CLIENT) на ПОЛЕ ломает загрузку
+    // BlockEntity на dedicated-сервере (NoSuchFieldError после RuntimeDistCleaner) и
+    // вторично ломает Create-disassembly поезда. Поле держим plain Object (null default).
+    private Object loopingSound;
+
+    /** Called from DoorAnimationDelayHelper when delay expires. Client-only. */
+//? if forge {
+@OnlyIn(Dist.CLIENT)
+//?}
+//? if fabric {
+/*@Environment(EnvType.CLIENT)*///?}
+    public void clearAnimationDelayClient() {
+        this.cachedModelData = null;
+        // requestModelDataUpdate() is Forge-only (model data system). On Fabric it's a no-op.
+    }
+
+    public DoorBlockEntity(BlockPos pos, BlockState state, String doorDeclId) {
+        super(ModBlockEntities.DOOR_ENTITY.get(), pos, state);
+        this.doorDeclId = doorDeclId;
+        DoorDecl decl = DoorDeclRegistry.getById(doorDeclId);
+        this.modelSelection = decl != null ? decl.getDefaultModelSelection() : DoorModelSelection.DEFAULT;
+    }
+
+    public DoorBlockEntity(BlockPos pos, BlockState state) {
+        this(pos, state, "large_vehicle_door");
+    }
+
+    /**
+     * Получить текущий выбор модели
+     */
+    public DoorModelSelection getModelSelection() {
+        return modelSelection;
+    }
+
+    //? if fabric {
+    /*@Override
+    public @org.jetbrains.annotations.Nullable Object getRenderAttachmentData() {
+        boolean isMoving = state == 2 || state == 3;
+        boolean isOpen = state == 1;
+        boolean isOverlap = !isMoving && cachedModelData != null;
+        return new DoorRenderData(modelSelection, isMoving, isOpen, isOverlap);
+    }
+
+    public record DoorRenderData(DoorModelSelection selection, boolean moving, boolean open, boolean overlap) {}
+    *///?}
+    
+    /**
+     * Установить выбор модели
+     */
+    public void setModelSelection(DoorModelSelection selection) {
+        if (!this.modelSelection.equals(selection)) {
+            this.modelSelection = selection;
+            setChanged();
+            
+            // Инвалидируем кэш
+            if (level != null && level.isClientSide) {
+                this.cachedModelData = null;
+                DoorChunkInvalidationHelper.scheduleChunkInvalidation(worldPosition);
+            }
+            
+            syncToClient();
+        }
+    }
+    
+    /**
+     * Установить тип модели
+     */
+    public void setModelType(DoorModelType type) {
+        // Сохраняем текущий скин если переключаемся в рамках MODERN
+        DoorSkin skin = type.isLegacy() ? DoorSkin.DEFAULT : this.modelSelection.getSkin();
+        setModelSelection(new DoorModelSelection(type, skin));
+    }
+    
+    /**
+     * Установить скин (только для MODERN модели)
+     */
+    public void setSkin(DoorSkin skin) {
+        if (this.modelSelection.isModern()) {
+            setModelSelection(new DoorModelSelection(DoorModelType.MODERN, skin));
+        }
+    }
+    
+    /**
+     * Быстрое переключение типа модели
+     */
+    public void toggleModelType() {
+        DoorModelType newType = modelSelection.getModelType().isLegacy() 
+            ? DoorModelType.MODERN 
+            : DoorModelType.LEGACY;
+        setModelType(newType);
+    }
+    
+    /**
+     * Сбросить к выбору по умолчанию
+     */
+    public void resetToDefault() {
+        if (level != null) {
+            DoorModelRegistry registry = DoorModelRegistry.getInstance();
+            DoorModelSelection defaultSelection = registry.getDefaultSelection(doorDeclId);
+            setModelSelection(defaultSelection);
+        }
+    }
+
+    // ==================== IMultiblockPart ====================
+
+    @Override
+    public synchronized void setControllerPos(BlockPos pos) {
+        this.controllerPos = pos;
+        setChanged();
+    }
+
+    @Override
+    @Nullable
+    public BlockPos getControllerPos() {
+        return controllerPos;
+    }
+
+    @Override
+    public void setPartRole(PartRole role) {
+        this.partRole = role;
+        setChanged();
+    }
+
+    @Override
+    public PartRole getPartRole() {
+        return partRole;
+    }
+
+    public boolean isController() {
+        return (controllerPos != null && controllerPos.equals(worldPosition)) || controllerPos == null;
+    }
+
+    @Nullable
+    public DoorBlockEntity getController() {
+        if (level == null) return null;
+        if (controllerPos == null) return this;
+        BlockEntity be = level.getBlockEntity(controllerPos);
+        return be instanceof DoorBlockEntity ? (DoorBlockEntity) be : null;
+    }
+
+    /**
+     * Вызывается после формирования структуры
+     */
+    public void onStructureFormed() {
+        // Инициализация после создания мультиблока
+        this.state = 0;
+        this.openTicks = 0;
+        this.animStartTime = System.currentTimeMillis();
+        if (level != null && level.isClientSide) {
+            initModelSelection(true); // Новая дверь - применить default из конфига
+        }
+        syncToClient();
+    }
+
+    @Override
+    public void clearRemoved() {
+        super.clearRemoved();
+        if (level instanceof ServerLevel serverLevel && !serverLevel.isClientSide()) {
+            BlockPos pos = this.getBlockPos();
+            // Ставим тик-задачу на СЛЕДУЮЩИЙ тик, а не выполняем прямо сейчас
+            serverLevel.getServer().tell(new net.minecraft.server.TickTask(
+                    serverLevel.getServer().getTickCount() + 1,
+                    () -> {
+                        if (serverLevel.isLoaded(pos)) {
+                            BlockState state = serverLevel.getBlockState(pos);
+                            if (state.getBlock() instanceof IMultiblockController controller) {
+                                controller.getStructureHelper().attemptAutoRepair(serverLevel, pos, state, controller);
+                            }
+                        }
+                    }
+            ));
+        }
+    }
+
+    // ==================== Публичные методы ====================
+
+    public DoorDecl getDoorDecl() {
+        // Если ID потерян, используем fallback
+        if (doorDeclId == null || doorDeclId.isEmpty()) {
+            if (getBlockState().getBlock() instanceof DoorBlock db) {
+                return DoorDeclRegistry.getById(db.getDoorDeclId());
+            }
+            return DoorDecl.LARGE_VEHICLE_DOOR;
+        }
+        return DoorDeclRegistry.getById(doorDeclId);
+    }
+    
+    // Для серверной логики используем строковый ID
+    public String getDoorDeclId() {
+        return doorDeclId;
+    }
+
+    public Direction getFacing() {
+        BlockState state = getBlockState();
+        return state.hasProperty(DoorBlock.FACING)
+            ? state.getValue(DoorBlock.FACING)
+            : Direction.NORTH;
+    }
+
+    public void checkRedstonePower() {
+        if (level == null || level.isClientSide) return;
+    
+        BlockState blockState = getBlockState();
+        if (!(blockState.getBlock() instanceof DoorBlock doorBlock)) return;
+    
+        MultiblockStructureHelper helper = doorBlock.getStructureHelper();
+        Direction facing = blockState.getValue(DoorBlock.FACING);
+        
+        // Проверяем сам контроллер
+        boolean isPowered = level.hasNeighborSignal(worldPosition);
+    
+        // Если контроллер не запитан, проверяем все фантомы
+        if (!isPowered) {
+            for (BlockPos partPos : helper.getAllPartPositions(worldPosition, facing)) {
+                if (level.hasNeighborSignal(partPos)) {
+                    isPowered = true;
+                    break;
+                }
+            }
+        }
+    
+        // Передаем итоговый результат в логику обработки
+        updateRedstoneState(isPowered);
+    }
+
+    /**
+     * Логика обработки редстоун-импульсов
+     */
+    private void updateRedstoneState(boolean powered) {
+        if (powered == this.lastRedstoneState) return;
+        this.lastRedstoneState = powered;
+    
+        if (powered) {
+            // Если дверь закрыта или в процессе закрытия - открываем
+            if (state == 0 || state == 2) {
+                open();
+            }
+        } else {
+            // Сигнал пропал
+            if (state == 1) { // Полностью открыта
+                close();
+            } else if (state == 3) { // В процессе открытия
+                int openTime = getDoorDecl().getOpenTime();
+                if (openTime <= 25) { // Только для быстрых дверей
+                    close();
+                }
+            }
+        }
+        setChanged();
+    }
+ 
+
+    private int getServerOpenTime() {
+        DoorDecl decl = getDoorDecl();
+        return decl != null ? decl.getOpenTime() : 60;
+    }
+
+    // ОБНОВИТЕ существующий метод getOpenProgress(float):
+    public float getOpenProgress(float partialTick) {
+        int openTime = getServerOpenTime();
+        if (openTime <= 0) return state == 1 || state == 3 ? 1f : 0f;
+        
+        long currentTime = System.currentTimeMillis();
+        long elapsedTime = currentTime - animStartTime;
+        int totalTimeMs = openTime * 50; 
+
+        return switch (state) {
+            case 0 -> 0f;
+            case 1 -> 1f;
+            case 2 -> Math.max(0f, 1f - ((float) elapsedTime / totalTimeMs));
+            case 3 -> Math.min(1f, (float) elapsedTime / totalTimeMs);
+            default -> 0f;
+        };
+    }
+
+    /**
+     * Получает прогресс открытия БЕЗ партиальных тиков (для серверного использования).
+     * @return прогресс от 0.0 до 1.0
+     */
+    public float getOpenProgress() {
+        return getOpenProgress(0f); // Используем 0 партиальных тиков для сервера
+    }
+    
+    public byte getState() {
+        return this.state;
+    }
+
+    public long getAnimStartTime() {
+        return animStartTime;
+    }
+
+    public int getSkinIndex() {
+        return 0; // Реализовать при необходимости
+    }
+
+    // ==================== State Management ====================
+
+    public void open() {
+        if (state == 0 || state == 2) {
+            setState((byte) 3);
+        }
+    }
+
+    public void close() {
+        if (state == 1 || state == 3) {
+            setState((byte) 2);
+        }
+    }
+
+    public void toggle() {
+
+        if (state == 2 || state == 3) {
+            return; // Дверь в процессе движения - игнорируем клик
+        }
+        
+        // Переключаем только если дверь полностью открыта или закрыта
+        if (state == 0) {
+            open();
+        } else if (state == 1) {
+            close();
+        }
+    }
+
+    /**
+     * Проверяет, находится ли дверь в процессе движения.
+     * На клиенте: включает задержку + grace period после полного открытия/закрытия -
+     * анимированная часть остаётся видимой, пока baked model не пересоберётся.
+     */
+    public boolean isMoving() {
+        if (state == 2 || state == 3) return true;
+        if (level != null && level.isClientSide && DoorAnimationDelayHelper.isInDelayPeriod(this)) {
+            return true;
+        }
+        return false;
+    }
+
+    private void setState(byte newState) {
+        this.state = newState;
+        this.animStartTime = System.currentTimeMillis();
+        if (newState == 3) {
+            this.openTicks = 0;
+        } else if (newState == 2) {
+            this.openTicks = getServerOpenTime(); // Используем серверный метод
+        }
+        // Обновляем BlockState с DOOR_MOVING и OPEN при изменении состояния
+        if (level != null && !level.isClientSide) {
+            boolean isMoving = newState == 2 || newState == 3;
+            boolean isOpen = newState == 1;
+            BlockState currentState = getBlockState();
+            if (currentState.getBlock() instanceof DoorBlock) {
+                boolean needsUpdate = false;
+                BlockState newBlockState = currentState;
+                if (currentState.hasProperty(DoorBlock.DOOR_MOVING)
+                        && currentState.getValue(DoorBlock.DOOR_MOVING) != isMoving) {
+                    newBlockState = newBlockState.setValue(DoorBlock.DOOR_MOVING, isMoving);
+                    needsUpdate = true;
+                }
+                if (currentState.hasProperty(DoorBlock.OPEN)
+                        && (newState == 0 || newState == 1)
+                        && currentState.getValue(DoorBlock.OPEN) != isOpen) {
+                    newBlockState = newBlockState.setValue(DoorBlock.OPEN, isOpen);
+                    needsUpdate = true;
+                }
+                if (needsUpdate) {
+                    level.setBlock(worldPosition, newBlockState, 3);
+                }
+            }
+        }
+        // Инвалидируем кэш ModelData при изменении состояния движения
+        if (level != null && level.isClientSide) {
+            this.cachedModelData = null;
+            DoorChunkInvalidationHelper.scheduleChunkInvalidation(worldPosition);
+        }
+        syncToClient();
+    }
+
+    public boolean isOpen() { return state == 1; }
+    public boolean isLocked() { return locked; }
+
+    public void setLocked(boolean locked) {
+        this.locked = locked;
+        syncToClient();
+    }
+
+    // ==================== Server Tick ====================
+
+    public static void serverTick(Level level, BlockPos pos, BlockState state, DoorBlockEntity be) {
+        int openTime = be.getServerOpenTime();
+        boolean shouldSync = false;
+    
+        if (be.state == 3) { // Opening
+            be.openTicks++;
+            if (be.openTicks >= openTime) {
+                be.state = 1;
+                be.openTicks = openTime;
+                shouldSync = true;
+                // Обновляем BlockState OPEN для baked-геометрии
+                if (state.hasProperty(DoorBlock.OPEN)) {
+                    level.setBlock(pos, state.setValue(DoorBlock.DOOR_MOVING, false).setValue(DoorBlock.OPEN, true), 3);
+                }
+                be.notifyNeighborsOfStateChange(level, pos);
+            }
+        } else if (be.state == 2) { // Closing
+            be.openTicks--;
+            if (be.openTicks <= 0) {
+                be.state = 0;
+                be.openTicks = 0;
+                shouldSync = true;
+                // Обновляем BlockState OPEN для baked-геометрии
+                if (state.hasProperty(DoorBlock.OPEN)) {
+                    level.setBlock(pos, state.setValue(DoorBlock.DOOR_MOVING, false).setValue(DoorBlock.OPEN, false), 3);
+                }
+                be.notifyNeighborsOfStateChange(level, pos);
+            }
+        }
+
+        if (be.state == 2 || be.state == 3) {
+            DoorDecl decl = be.getDoorDecl();
+            if (decl != null) {
+                decl.onTick(be);
+            }
+        }
+    
+        if (shouldSync) {
+            be.syncToClient();
+        }
+    }
+
+    private void notifyNeighborsOfStateChange(Level level, BlockPos controllerPos) {
+        BlockState blockState = getBlockState();
+        if (!(blockState.getBlock() instanceof DoorBlock doorBlock)) return;
+        
+        Direction facing = blockState.getValue(DoorBlock.FACING);
+        MultiblockStructureHelper structureHelper = doorBlock.getStructureHelper();
+        boolean isOpen = this.state != 0;
+        
+        // Контроллер: флаг 2 (NOTIFY_CLIENTS) - оповещаем клиентов о смене блокстейта.
+        // updateNeighborsAt только для контроллера (редстоун и т.д.), не для каждого блока двери.
+        BlockState controllerState = level.getBlockState(controllerPos);
+        level.sendBlockUpdated(controllerPos, controllerState, controllerState, 2);
+        level.updateNeighborsAt(controllerPos, controllerState.getBlock());
+        level.getLightEngine().checkBlock(controllerPos);
+
+        for (BlockPos partPos : structureHelper.getAllPartPositions(controllerPos, facing)) {
+            BlockState partState = level.getBlockState(partPos);
+            if (partState.hasProperty(com.hbm_m.block.UniversalMachinePartBlock.PASSABLE)) {
+                boolean currentPassable = partState.getValue(com.hbm_m.block.UniversalMachinePartBlock.PASSABLE);
+                if (currentPassable != isOpen) {
+                    level.setBlock(partPos, partState.setValue(com.hbm_m.block.UniversalMachinePartBlock.PASSABLE, isOpen), 2);
+                }
+            }
+            partState = level.getBlockState(partPos);
+            level.sendBlockUpdated(partPos, partState, partState, 2);
+            level.getLightEngine().checkBlock(partPos);
+        }
+    }
+
+    public DoorDecl getServerDoorDecl() {
+        return DoorDeclRegistry.getById(this.doorDeclId);
+    }
+
+    // private void updatePhantomBlocks(Level level, BlockPos controllerPos, int openTime) {
+    //     Direction facing = getFacing();
+        
+    //     // ИСПРАВЛЕНО: Используем фиксированные значения для сервера
+    //     // Для клиента можно получить из DoorDecl, но для сервера используем стандартные
+    //     int[][] ranges = {
+    //         {0, 0, 0, -5, 6, 2},  // Левая створка
+    //         {0, 0, 0, 4, 6, 2}    // Правая створка
+    //     };
+        
+    //     for (int i = 0; i < ranges.length; i++) {
+    //         int[] range = ranges[i];
+    //         float time = getDoorRangeOpenTime(openTicks, openTime);
+            
+    //         for (int j = 0; j < Math.abs(range[3]); j++) {
+    //             float threshold = (float) j / Math.max(1, Math.abs(range[3] - 1));
+    //             if (state == 3 && threshold > time) break;
+    //             if (state == 2 && threshold < time) continue;
+                
+    //             for (int k = 0; k < range[4]; k++) {
+    //                 BlockPos offset = calculateOffset(range, j, k, facing);
+    //                 BlockPos targetPos = controllerPos.offset(offset.getX(), offset.getY(), offset.getZ());
+                    
+    //                 if (!targetPos.equals(controllerPos)) {
+    //                     BlockState currentState = level.getBlockState(targetPos);
+    //                     if (currentState.hasProperty(DoorBlock.OPEN)) {
+    //                         boolean shouldOpen = (state == 3);
+    //                         level.setBlock(targetPos,
+    //                             currentState.setValue(DoorBlock.OPEN, shouldOpen), 3);
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
+
+    // private float getDoorRangeOpenTime(int currentTick, int maxTime) {
+    //     if (maxTime == 0) return 0;
+    //     return Math.max(0, Math.min(1, (float) currentTick / maxTime));
+    // }
+
+    // private BlockPos calculateOffset(int[] range, int j, int k, Direction facing) {
+    //     BlockPos add = BlockPos.ZERO;
+    //     switch (range[5]) {
+    //         case 0: add = new BlockPos(0, k, (int) Math.signum(range[3]) * j); break;
+    //         case 1: add = new BlockPos(k, (int) Math.signum(range[3]) * j, 0); break;
+    //         case 2: add = new BlockPos((int) Math.signum(range[3]) * j, k, 0); break;
+    //     }
+        
+    //     BlockPos startPos = new BlockPos(range[0], range[1], range[2]);
+    //     return rotatePos(startPos.offset(add), facing);
+    // }
+
+    // private BlockPos rotatePos(BlockPos pos, Direction facing) {
+    //     return switch (facing) {
+    //         case NORTH -> pos;
+    //         case SOUTH -> new BlockPos(-pos.getX(), pos.getY(), -pos.getZ());
+    //         case WEST -> new BlockPos(-pos.getZ(), pos.getY(), pos.getX());
+    //         case EAST -> new BlockPos(pos.getZ(), pos.getY(), -pos.getX());
+    //         default -> pos;
+    //     };
+    // }
+
+    // ==================== Client Sound Handling ====================
+//? if forge {
+@OnlyIn(Dist.CLIENT)
+//?}
+//? if fabric {
+/*@Environment(EnvType.CLIENT)*///?}
+    private void handleNewState(byte oldState, byte newState) {
+        if (oldState == newState) return;
+        if (!isController()) return;
+        
+        DoorDecl decl = getDoorDecl();
+        if (decl == null) return;
+        
+        if (oldState == 0 && newState == 3) { // Начинает открываться
+            handleSoundTransition(decl.getOpenSoundStart(), decl.getOpenSoundLoop(), decl.getSoundLoop2());
+            
+        } else if (oldState == 1 && newState == 2) { // Начинает закрываться
+            handleSoundTransition(decl.getCloseSoundStart(), decl.getCloseSoundLoop(), decl.getSoundLoop2());
+            
+        } else if (oldState == 3 && newState == 1) { // Полностью открылась
+            handleSoundEnd(decl.getOpenSoundEnd());
+            
+        } else if (oldState == 2 && newState == 0) { // Полностью закрылась
+            handleSoundEnd(decl.getCloseSoundEnd());
+            
+        } else {
+            ClientSoundBootstrap.stopSound(level, worldPosition);
+        }
+    }
+//? if forge {
+@OnlyIn(Dist.CLIENT)
+//?}
+//? if fabric {
+/*@Environment(EnvType.CLIENT)*///?}
+    private void handleSoundTransition(SoundEvent startSound, SoundEvent loopSound, SoundEvent loopSound2) {
+        // 1. Разовый звук старта
+        if (startSound != null) {
+            ClientSoundBootstrap.playOneShotSound(level, worldPosition, startSound, getDoorDecl().getSoundVolume());
+        }
+        
+        // 2. Первый цикл (основной)
+        if (loopSound != null) {
+            ClientSoundBootstrap.updateDoorSoundRaw(level, worldPosition, "loop1", true, () -> createLoopingSoundReflect(loopSound));
+        }
+        
+        // 3. Второй цикл (дополнительный, например сирена)
+        if (loopSound2 != null) {
+            ClientSoundBootstrap.updateDoorSoundRaw(level, worldPosition, "loop2", true, () -> createLoopingSoundReflect(loopSound2));
+        }
+    }
+//? if forge {
+@OnlyIn(Dist.CLIENT)
+//?}
+//? if fabric {
+/*@Environment(EnvType.CLIENT)*///?}
+    private void handleSoundEnd(SoundEvent endSound) {
+        // Останавливаем ОБА цикла
+        ClientSoundBootstrap.stopSpecificSound(level, worldPosition, "loop1");
+        ClientSoundBootstrap.stopSpecificSound(level, worldPosition, "loop2");
+        
+        // Воспроизводим звук финиша
+        if (endSound != null) {
+            ClientSoundBootstrap.playOneShotSound(level, worldPosition, endSound, getDoorDecl().getSoundVolume());
+        }
+    }
+//? if forge {
+@OnlyIn(Dist.CLIENT)
+//?}
+//? if fabric {
+/*@Environment(EnvType.CLIENT)*///?}
+    private Object createLoopingSoundReflect(SoundEvent sound) {
+        try {
+            return Class.forName(DOOR_LOOP_SOUND_FACTORY)
+                .getMethod("create", DoorBlockEntity.class, SoundEvent.class)
+                .invoke(null, this, sound);
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Override
+    public void setRemoved() {
+        super.setRemoved();
+        if (level != null && level.isClientSide) {
+            ClientSoundBootstrap.stopSound(level, worldPosition);
+        }
+    }
+
+    // ==================== NBT & Sync ====================
+    @Override
+    protected void saveAdditional(CompoundTag tag) {
+        super.saveAdditional(tag);
+        tag.putByte("state", state);
+        tag.putInt("openTicks", openTicks);
+        tag.putLong("animStartTime", animStartTime);
+        tag.putString("doorDeclId", doorDeclId);
+        tag.putBoolean("locked", locked);
+        tag.putBoolean("redstoneState", lastRedstoneState);
+        modelSelection.save(tag);
+        if (controllerPos != null) {
+            tag.putLong("controllerPos", controllerPos.asLong());
+        }
+        if (!allowedClimbSides.isEmpty()) {
+            int mask = 0;
+            for (Direction dir : allowedClimbSides) mask |= (1 << dir.get3DDataValue());
+            tag.putInt("climbSides", mask);
+        }
+        tag.putString("partRole", partRole.name());
+    }
+
+    @Override
+    public void load(CompoundTag tag) {
+        super.load(tag);
+        byte oldState = this.state; // Запоминаем старое состояние
+        
+        this.state = tag.getByte("state");
+        this.openTicks = tag.getInt("openTicks");
+        this.animStartTime = tag.getLong("animStartTime");
+        this.locked = tag.getBoolean("locked");
+        this.lastRedstoneState = tag.getBoolean("redstoneState");
+
+        boolean hadModelSelectionInNbt = tag.contains("modelType");
+        if (hadModelSelectionInNbt) {
+            this.modelSelection = DoorModelSelection.load(tag);
+        } else {
+            // Совместимость со старыми сохранениями
+            this.modelSelection = DoorModelSelection.DEFAULT;
+        }
+        this.cachedModelData = null;
+        
+        if (tag.contains("controllerPos")) {
+            this.controllerPos = BlockPos.of(tag.getLong("controllerPos"));
+        }
+
+        if (tag.contains("doorDeclId")) {
+            this.doorDeclId = tag.getString("doorDeclId");
+        }        
+        
+        if (tag.contains("partRole")) {
+            try {
+                this.partRole = PartRole.valueOf(tag.getString("partRole"));
+            } catch (IllegalArgumentException e) {
+                this.partRole = PartRole.DEFAULT;
+            }
+        }
+        
+        if (tag.contains("climbSides")) {
+            int mask = tag.getInt("climbSides");
+            allowedClimbSides.clear();
+            for (Direction dir : Direction.values()) {
+                if ((mask & (1 << dir.get3DDataValue())) != 0) {
+                    allowedClimbSides.add(dir);
+                }
+            }
+        }
+
+        if (level != null && level.isClientSide) {
+            initModelSelection(!hadModelSelectionInNbt);
+            handleNewState(oldState, this.state);
+            // ИСПРАВЛЕНИЕ МОРГАНИЯ: при получении state 2/3 (движение) используем клиентское время.
+            // Серверный animStartTime приводит к рассинхрону часов и скачкам прогресса анимации.
+            if (this.state == 2 || this.state == 3) {
+                this.animStartTime = System.currentTimeMillis();
+            }
+            // Задержка: при переходе из moving (2/3) в static (0/1) - анимированная часть остаётся ещё 500ms
+            if ((oldState == 2 || oldState == 3) && (this.state == 0 || this.state == 1)) {
+                DoorAnimationDelayHelper.addToQueue(this, 500);
+            }
+        }
+    }
+    // Forge-only ModelData hook removed for Fabric compilation.
+
+    /**
+     * Инициализирует выбор модели на основе конфигурации.
+     * Вызывается только для старых сохранений (без modelType в NBT).
+     * Если hadModelSelectionInNbt=false - применить default из JSON (MODERN и т.д.).
+     * Если hadModelSelectionInNbt=true - не перезаписывать: значение уже загружено из NBT
+     * (в т.ч. явный выбор LEGACY, который равен DoorModelSelection.DEFAULT).
+     */
+//? if forge {
+@OnlyIn(Dist.CLIENT)
+//?}
+//? if fabric {
+/*@Environment(EnvType.CLIENT)*///?}
+    public void initModelSelection(boolean applyConfigDefault) {
+        if (!applyConfigDefault) {
+            return; // Значение из NBT - не перезаписывать
+        }
+        
+        DoorModelRegistry registry = DoorModelRegistry.getInstance();
+        if (registry.isInitialized()) {
+            DoorModelSelection defaultSelection = registry.getDefaultSelection(doorDeclId);
+            if (defaultSelection != null && !defaultSelection.equals(DoorModelSelection.DEFAULT)) {
+                this.modelSelection = defaultSelection;
+                this.cachedModelData = null;
+                MainRegistry.LOGGER.debug("Initialized model selection for door {}: {}", 
+                    doorDeclId, defaultSelection);
+            }
+        }
+    }
+
+    @Override
+    public CompoundTag getUpdateTag() {
+        CompoundTag tag = super.getUpdateTag();
+        saveAdditional(tag);
+        return tag;
+    }
+    //? if forge {
+    @Override
+    //?}
+
+    public void handleUpdateTag(CompoundTag tag) {
+        load(tag);
+    }
+
+    @Nullable
+    @Override
+    public Packet<ClientGamePacketListener> getUpdatePacket() {
+        return ClientboundBlockEntityDataPacket.create(this);
+    }
+
+    public int getOpenTicks() {
+        return this.openTicks;
+    }
+
+    //? if forge {
+    @Override
+    //?}
+    public void onDataPacket(net.minecraft.network.Connection net, ClientboundBlockEntityDataPacket pkt) {
+        CompoundTag tag = PlatformHooks.getItemTag(pkt);
+        if (tag != null) {
+            // Сохраняем предыдущее видимое состояние ДО загрузки - чтобы определить, нужна ли инвалидация
+            byte prevState = this.state;
+            DoorModelSelection prevSelection = this.modelSelection;
+
+            load(tag);
+
+            if (level != null && level.isClientSide) {
+                // Инвалидируем чанк только при реальном изменении видимого состояния:
+                // DOOR_MOVING/OPEN перехода или смены скина/модели.
+                // Иначе каждый BE-пакет (даже с теми же данными) вызывал пересборку.
+                boolean visibleChange = isVisibleStateChange(prevState, this.state)
+                                     || !prevSelection.equals(this.modelSelection);
+                if (visibleChange) {
+                    DoorChunkInvalidationHelper.scheduleChunkInvalidation(worldPosition);
+                }
+            }
+        }
+    }
+
+    /** Возвращает true только при переходах DOOR_MOVING или OPEN - то, что видит игрок. */
+    private static boolean isVisibleStateChange(byte oldS, byte newS) {
+        boolean wasMoving = oldS == 2 || oldS == 3;
+        boolean isMoving  = newS == 2 || newS == 3;
+        boolean wasOpen   = oldS == 1;
+        boolean isOpen    = newS == 1;
+        return wasMoving != isMoving || wasOpen != isOpen;
+    }
+
+    private void syncToClient() {
+        if (level != null && !level.isClientSide && level instanceof ServerLevel serverLevel) {
+            // sendBlockUpdated() убрано: вызывало 3 события на клиенте за один sync -
+            // ClientboundBlockUpdatePacket + broadcastBlockEntityData + явный пакет ниже.
+            // Изменения BlockState (OPEN, DOOR_MOVING) отправляются через level.setBlock() в setState().
+            // Изменения остальных данных (ModelData, скины) - через явный BE-пакет.
+            setChanged();
+            var packet = ClientboundBlockEntityDataPacket.create(this);
+            for (ServerPlayer player : serverLevel.players()) {
+                if (player.distanceToSqr(worldPosition.getX() + 0.5, worldPosition.getY() + 0.5, worldPosition.getZ() + 0.5) < 64 * 64) {
+                    player.connection.send(packet);
+                }
+            }
+        }
+    }
+    //? if forge {
+    @Override
+    //?}
+    public AABB getRenderBoundingBox() {
+        double radius = 8.0; // Fallback
+        if (level != null && level.isClientSide) {
+            DoorDecl decl = getDoorDecl();
+            if (decl != null) {
+                radius = decl.getRenderRadius();
+            }
+        }
+        return new AABB(worldPosition).inflate(radius);
+    }
+
+    @Override
+    public void setAllowedClimbSides(java.util.Set<Direction> sides) {
+        this.allowedClimbSides = java.util.EnumSet.copyOf(sides);
+        this.setChanged();
+    }
+
+    @Override
+    public java.util.Set<Direction> getAllowedClimbSides() {
+        return this.allowedClimbSides;
+    }
+}

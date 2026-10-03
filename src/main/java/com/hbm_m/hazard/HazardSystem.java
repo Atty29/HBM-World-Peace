@@ -1,0 +1,203 @@
+package com.hbm_m.hazard;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+import com.hbm_m.handler.HazmatRegistry;
+import com.hbm_m.block.generic.BlockSellafieldSlaked;
+import com.hbm_m.hazard.modifier.HazardModifier;
+import com.hbm_m.hazard.type.HazardTypeBase;
+
+import net.minecraft.tags.TagKey;
+import net.minecraft.util.Mth;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
+
+/**
+ * Централизованная система для определения опасностей, исходящих от предметов.
+ * Позволяет регистрировать правила для Тегов и конкретных Предметов.
+ * Система работает по принципу приоритетов: Теги < Предметы.
+ * Это статичный класс-утилита, его не нужно создавать.
+ */
+
+public final class HazardSystem {
+
+    // Приватный конструктор, чтобы никто не мог создать экземпляр этого класса.
+    private HazardSystem() {}
+
+    // ВНУТРЕННИЕ ХРАНИЛИЩА ПРАВИЛ 
+    // Они приватные, чтобы гарантировать целостность данных. Все взаимодействие идет через публичные методы.
+
+    // Правила для тегов (самый низкий приоритет)
+    private static final Map<TagKey<Item>, HazardData> TAG_RULES = new ConcurrentHashMap<>();
+    // Правила для конкретных предметов (самый высокий приоритет)
+    private static final Map<Item, HazardData> ITEM_RULES = new ConcurrentHashMap<>();
+    // Кэш для уже вычисленных результатов. Ключ - Item, Значение - финальный список опасностей.
+    private static final Map<Item, List<HazardEntry>> HAZARD_CACHE = new ConcurrentHashMap<>();
+
+    // ПУБЛИЧНЫЕ МЕТОДЫ РЕГИСТРАЦИИ 
+
+    /**
+     * Регистрирует правило опасности для всех предметов с указанным тегом.
+     * @param tag  Ключ тега (например, TagKeys.create(Registries.ITEM, new ResourceLocation("forge", "ingots/uranium")))
+     * @param data Данные об опасности.
+     */
+    public static void register(TagKey<Item> tag, HazardData data) {
+        TAG_RULES.put(tag, data);
+    }
+
+    /**
+     * Регистрирует правило опасности для конкретного предмета.
+     * Это правило имеет более высокий приоритет, чем правила для тегов.
+     * @param item Предмет (например, ModItems.URANIUM_INGOT.get())
+     * @param data Данные об опасности.
+     */
+
+    public static void register(Item item, HazardData data) {
+        ITEM_RULES.put(item, data);
+    }
+
+    /**
+     * Удобный метод-обертка для регистрации опасности для блока.
+     * @param block Блок (например, ModBlocks.URANIUM_BLOCK.get())
+     * @param data  Данные об опасности.
+     */
+
+    public static void register(Block block, HazardData data) {
+        register(block.asItem(), data);
+    }
+
+    // ПУБЛИЧНЫЕ МЕТОДЫ ПОЛУЧЕНИЯ ДАННЫХ 
+
+    /**
+     * Главный метод. Возвращает итоговый список опасностей для указанного ItemStack,
+     * применяя все правила приоритетов и переопределений.
+     *
+     * @param stack ItemStack для проверки.
+     * @return Финальный список HazardEntry.
+     */
+    public static List<HazardEntry> getHazardsFromStack(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        Item item = stack.getItem();
+
+        // 1. Сначала проверяем кэш
+        if (HAZARD_CACHE.containsKey(item)) {
+            return HAZARD_CACHE.get(item);
+        }
+
+        // Если в кэше нет, выполняем полную логику (ваш существующий код) 
+        List<HazardData> applicableData = new ArrayList<>();
+        stack.getTags().forEach(tag -> {
+            if (TAG_RULES.containsKey(tag)) {
+                applicableData.add(TAG_RULES.get(tag));
+            }
+        });
+
+        if (ITEM_RULES.containsKey(item)) {
+            applicableData.add(ITEM_RULES.get(item));
+        }
+
+        if (applicableData.isEmpty()) {
+            HAZARD_CACHE.put(item, Collections.emptyList()); // Кэшируем и пустой результат
+            return Collections.emptyList();
+        }
+
+        // 2. "Сворачиваем" правила в итоговый список опасностей
+        List<HazardEntry> finalEntries = new ArrayList<>();
+        int mutex = 0;
+
+        for (HazardData data : applicableData) {
+            // Если правило помечено как "переопределяющее", очищаем все, что было найдено до него.
+            if (data.doesOverride) {
+                finalEntries.clear();
+                mutex = 0; // Сбрасываем и мьютекс
+            }
+
+            // Проверяем мьютекс (пока не используется, но логика готова)
+            if ((data.getMutex() & mutex) == 0) {
+                finalEntries.addAll(data.entries);
+                mutex |= data.getMutex();
+            }
+        }
+        HAZARD_CACHE.put(item, finalEntries);
+        return finalEntries;
+    }
+
+    /**
+     * Удобный метод для получения числового значения конкретной опасности для предмета.
+     *
+     * @param stack ItemStack для проверки.
+     * @param type  Тип искомой опасности.
+     * @return Уровень опасности или 0.0f, если не найдено.
+     */
+    
+    public static float getHazardLevelFromStack(ItemStack stack, HazardTypeBase hazard) {
+        // Получаем список опасностей и дополнительно защищаемся от возможного null
+        List<HazardEntry> entries = getHazardsFromStack(stack);
+        if (entries == null || entries.isEmpty()) {
+            return 0.0f;
+        }
+    
+        // Обычный цикл без stream, чуть быстрее и без лишных объектов
+        for (HazardEntry entry : entries) {
+            if (entry.type == hazard) {
+                return HazardModifier.evalAllModifiers(stack, null, entry.baseLevel, entry.mods);
+            }
+        }
+    
+        return 0.0f;
+    }
+
+    public static void applyHazards(ItemStack stack, LivingEntity entity) {
+        for (HazardEntry hazardEntry : getHazardsFromStack(stack)) {
+            hazardEntry.applyHazard(stack, entity);
+        }
+    }
+
+    public static float getHazardLevelFromState(BlockState state, HazardTypeBase hazard) {
+        if (state.isAir() || state.getBlock().asItem() == Items.AIR) {
+            return 0.0f;
+        }
+        float fromItem = getHazardLevelFromStack(new ItemStack(state.getBlock()), hazard);
+        if (fromItem > 0.0f) {
+            return fromItem;
+        }
+        if (hazard == HazardRegistry.RADIATION && state.hasProperty(BlockSellafieldSlaked.COLOR_LEVEL)) {
+            return sellafiteRadiationForLevel(state.getValue(BlockSellafieldSlaked.COLOR_LEVEL));
+        }
+        return 0.0f;
+    }
+
+    /** GIT HazardRegistry sellafield meta 0–5; уровни 6–10 — горячий центр кратера (fallout color_level). */
+    public static float sellafiteRadiationForLevel(int level) {
+        level = Mth.clamp(level, 0, 10);
+        if (level <= 5) {
+            return switch (level) {
+                case 0 -> 0.5f;
+                case 1 -> 1.0f;
+                case 2 -> 2.5f;
+                case 3 -> 4.0f;
+                case 4 -> 5.0f;
+                default -> 10.0f;
+            };
+        }
+        return 10.0f + (level - 5) * 5.0f;
+    }
+
+    /**
+     * Сопротивление брони (как {@link HazmatRegistry#getResistance(ItemStack)}).
+     */
+    public static float getArmorProtection(ItemStack armorStack) {
+        return (float) HazmatRegistry.getResistance(armorStack);
+    }
+}

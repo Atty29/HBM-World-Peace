@@ -1,0 +1,27 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.hbm_m.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "mixins.hbm_m.refmap.json",
+  "mixins": [
+    "SlotMixin",
+    "PlayerStepSoundMixin",
+    "CreeperMixin",
+    "CreeperAccessor",
+    "LivingEntityRadiationMixin"
+  ],
+  "server": [
+  ],
+  "client": [
+    "GameRendererMixin",
+    "LightTextureMixin",
+    "ModelBlockRendererMixin",
+    "LivingEntityRendererInvoker",
+    "client.MixinItemRendererTemplatePreview",
+    "client.MixinAbstractClientPlayerSkin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

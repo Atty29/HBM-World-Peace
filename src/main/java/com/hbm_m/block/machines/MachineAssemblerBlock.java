@@ -1,0 +1,292 @@
+package com.hbm_m.block.machines;
+
+import java.util.Map;
+//? if forge {
+import net.minecraftforge.common.capabilities.ForgeCapabilities;
+//?}
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+import com.google.common.collect.ImmutableMap;
+import com.hbm_m.api.energy.EnergyNetworkManager;
+import com.hbm_m.block.ModBlocks;
+import com.hbm_m.blockentity.ModBlockEntities;
+import com.hbm_m.blockentity.machines.MachineAssemblerBlockEntity;
+import com.hbm_m.interfaces.IMultiblockController;
+import com.hbm_m.multiblock.MultiblockStructureHelper;
+import com.hbm_m.multiblock.PartRole;
+
+import dev.architectury.registry.menu.MenuRegistry;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.MenuProvider;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.context.BlockPlaceContext;
+import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.BaseEntityBlock;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.HorizontalDirectionalBlock;
+import net.minecraft.world.level.block.RenderShape;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.entity.BlockEntityTicker;
+import net.minecraft.world.level.block.entity.BlockEntityType;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.StateDefinition;
+import net.minecraft.world.level.block.state.properties.BooleanProperty;
+import net.minecraft.world.level.block.state.properties.DirectionProperty;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.world.phys.shapes.Shapes;
+import net.minecraft.world.phys.shapes.VoxelShape;
+
+
+/**
+ * Сборочная машина (мультиблок 3x2x3).
+ *  Корректно интегрирована в энергосеть HBM.
+ */
+public class MachineAssemblerBlock extends BaseEntityBlock implements IMultiblockController {
+
+    public static final DirectionProperty FACING = HorizontalDirectionalBlock.FACING;
+
+    private static final Supplier<Map<Direction, VoxelShape>> SHAPES = memoize(() ->
+            ImmutableMap.<Direction, VoxelShape>builder()
+                    .put(Direction.NORTH, buildShapeNorth().move(0.5, 0, 0.5))
+                    .put(Direction.SOUTH,  buildShapeSouth().move(0.5, 0, 0.5))
+                    .put(Direction.WEST,   buildShapeWest().move(0.5, 0, 0.5))
+                    .put(Direction.EAST,   buildShapeEast().move(0.5, 0, 0.5))
+                    .build()
+    );
+
+    private static <T> Supplier<T> memoize(Supplier<T> factory) {
+        AtomicReference<T> ref = new AtomicReference<>();
+        return () -> {
+            T existing = ref.get();
+            if (existing != null) return existing;
+            T created = factory.get();
+            ref.compareAndSet(null, created);
+            return ref.get();
+        };
+    }
+
+    private static VoxelShape buildShapeNorth() {
+        return Shapes.or(
+                Block.box(-16, 0, -16, 32, 32, 32),
+                Block.box(-24, 0, 8, -8, 16, 24),
+                Block.box(32, 0, -8, 40, 16, 8),
+                Block.box(-2.5, 5.5, -24, 2.5, 10.5, -16),
+                Block.box(13.5, 5.5, -24, 18.5, 10.5, -16),
+                Block.box(-2.5, 5.5, 32, 2.5, 10.5, 40),
+                Block.box(13.5, 5.5, 32, 18.5, 10.5, 40)
+        ).optimize();
+    }
+
+    private static VoxelShape buildShapeEast() {
+        return Shapes.or(
+                Block.box(-32, 0, -16, 16, 32, 32),
+                Block.box(-24, 0, -24, -8, 16, -8),
+                Block.box(-8, 0, 32, 8, 16, 40),
+                Block.box(16, 5.5, -2.5, 24, 10.5, 2.5),
+                Block.box(16, 5.5, 13.5, 24, 10.5, 18.5),
+                Block.box(-40, 5.5, -2.5, -32, 10.5, 2.5),
+                Block.box(-40, 5.5, 13.5, -32, 10.5, 18.5)
+        ).optimize();
+    }
+
+    private static VoxelShape buildShapeSouth() {
+        return Shapes.or(
+                Block.box(-32, 0, -32, 16, 32, 16),
+                Block.box(8, 0, -24, 24, 16, -8),
+                Block.box(-40, 0, -8, -32, 16, 8),
+                Block.box(-2.5, 5.5, 16, 2.5, 10.5, 24),
+                Block.box(-18.5, 5.5, 16, -13.5, 10.5, 24),
+                Block.box(-2.5, 5.5, -40, 2.5, 10.5, -32),
+                Block.box(-18.5, 5.5, -40, -13.5, 10.5, -32)
+        ).optimize();
+    }
+
+    private static VoxelShape buildShapeWest() {
+        return Shapes.or(
+                Block.box(-16, 0, -32, 32, 32, 16),
+                Block.box(8, 0, 8, 24, 16, 24),
+                Block.box(-8, 0, -40, 8, 16, -32),
+                Block.box(-24, 5.5, -2.5, -16, 10.5, 2.5),
+                Block.box(-24, 5.5, -18.5, -16, 10.5, -13.5),
+                Block.box(32, 5.5, -2.5, 40, 10.5, 2.5),
+                Block.box(32, 5.5, -18.5, 40, 10.5, -13.5)
+        ).optimize();
+    }
+
+    private static MultiblockStructureHelper STRUCTURE_HELPER;
+
+    public MachineAssemblerBlock(Properties properties) {
+        super(properties);
+        this.registerDefaultState(this.stateDefinition.any()
+                .setValue(FACING, Direction.NORTH));
+    }
+
+    @Override
+    public PartRole getPartRole(BlockPos localOffset) {
+        int x = localOffset.getX();
+        int y = localOffset.getY();
+        int z = localOffset.getZ();
+
+        // Энергетические коннекторы
+        boolean isEnergy = (y == 0) && (x >= 0 && x <= 1) && (z == -1 || z == 2);
+        if (isEnergy) {
+            return PartRole.ENERGY_CONNECTOR;
+        }
+
+        // Выходные конвейеры
+        boolean isOutput = (y == 0) && x == -1 && (z == 0 || z == 1);
+        if (isOutput) {
+            return PartRole.ITEM_OUTPUT;
+        }
+
+        // Входные конвейеры
+        boolean isInput = (y == 0) && x == 2 && (z == 0 || z == 1);
+        if (isInput) {
+            return PartRole.ITEM_INPUT;
+        }
+
+        return PartRole.DEFAULT;
+    }
+
+    @Override
+    public MultiblockStructureHelper getStructureHelper() {
+        if (STRUCTURE_HELPER == null) {
+            STRUCTURE_HELPER = new MultiblockStructureHelper(defineStructure(), () -> ModBlocks.UNIVERSAL_MACHINE_PART.get().defaultBlockState());
+        }
+        return STRUCTURE_HELPER;
+    }
+
+    @Override
+    public VoxelShape getCustomMasterVoxelShape(BlockState state) {
+        return SHAPES.get().get(state.getValue(FACING));
+    }
+
+    private static Map<BlockPos, Supplier<BlockState>> defineStructure() {
+        ImmutableMap.Builder<BlockPos, Supplier<BlockState>> builder = ImmutableMap.builder();
+        for (int y = 0; y <= 1; y++) {
+            for (int x = -1; x <= 2; x++) {
+                for (int z = -1; z <= 2; z++) {
+                    if (y == 0 && x == 0 && z == 0) continue; // Пропускаем контроллер
+                    builder.put(new BlockPos(x, y, z), () -> ModBlocks.UNIVERSAL_MACHINE_PART.get().defaultBlockState());
+                }
+            }
+        }
+        return builder.build();
+    }
+
+    //  ДОБАВЛЕНО: Регистрация в энергосети
+    @Override
+    public void onPlace(BlockState state, Level level, BlockPos pos, BlockState oldState, boolean isMoving) {
+        super.onPlace(state, level, pos, oldState, isMoving);
+
+        if (!state.is(oldState.getBlock()) && !level.isClientSide()) {
+            BlockPos core = placeMultiblockStructure(level, pos, state);
+            if (core == null) {
+                return;
+            }
+            Direction facing = state.getValue(FACING);
+            //  Регистрируем контроллер (IEnergyReceiver)
+            EnergyNetworkManager.get((ServerLevel) level).addNode(core);
+
+            //  Регистрируем энергетические коннекторы
+            for (BlockPos localPos : getStructureHelper().getStructureMap().keySet()) {
+                if (getPartRole(localPos) == PartRole.ENERGY_CONNECTOR) {
+                    BlockPos worldPos = getStructureHelper().getRotatedPos(core, localPos, facing);
+                    EnergyNetworkManager.get((ServerLevel) level).addNode(worldPos);
+                }
+            }
+        }
+    }
+
+    //  ДОБАВЛЕНО: Удаление из энергосети
+
+    @Override
+    public boolean canSurvive(BlockState state, net.minecraft.world.level.LevelReader level, BlockPos pos) {
+        return super.canSurvive(state, level, pos) && canSurviveMultiblockPlacement(state, level, pos);
+    }
+
+    @Override
+    public void onRemove(BlockState state, Level level, BlockPos pos, BlockState newState, boolean isMoving) {
+        if (!state.is(newState.getBlock())) {
+            if (!level.isClientSide()) {
+                MultiblockStructureHelper helper = getStructureHelper();
+                Direction facing = state.getValue(FACING);
+
+                // Удаляем из энергосети (этот код у нас уже правильный)
+                for (BlockPos localPos : helper.getStructureMap().keySet()) {
+                    if (getPartRole(localPos) == PartRole.ENERGY_CONNECTOR) {
+                        BlockPos worldPos = helper.getRotatedPos(pos, localPos, facing);
+                        EnergyNetworkManager.get((ServerLevel) level).removeNode(worldPos);
+                    }
+                }
+                
+                BlockEntity blockEntity = level.getBlockEntity(pos);
+                if (blockEntity instanceof com.hbm_m.blockentity.BaseMachineBlockEntity be) {
+                    be.dropInventoryContents();
+                }
+
+                helper.destroyStructure(level, pos, facing);
+            }
+        }
+        super.onRemove(state, level, pos, newState, isMoving);
+    }
+
+    @Override
+    public InteractionResult use(@NotNull BlockState state, @NotNull Level level, @NotNull BlockPos pos, @NotNull Player player, @NotNull InteractionHand hand, @NotNull BlockHitResult hit) {
+        if (!level.isClientSide) {
+            BlockEntity entity = level.getBlockEntity(pos);
+            if (entity instanceof MenuProvider) {
+                if (player instanceof ServerPlayer serverPlayer) {
+                    MenuRegistry.openExtendedMenu(serverPlayer, (MenuProvider) entity, buf -> buf.writeBlockPos(pos));
+                }
+            }
+        }
+        return InteractionResult.SUCCESS;
+    }
+
+    @Override
+    public VoxelShape getShape(BlockState state, BlockGetter level, BlockPos pos, CollisionContext context) {
+        return getCustomMasterVoxelShape(state);
+    }
+
+    @Override
+    public VoxelShape getCollisionShape(BlockState state, BlockGetter level, BlockPos pos, CollisionContext context) {
+        return getCustomMasterVoxelShape(state);
+    }
+
+    @Override
+    public RenderShape getRenderShape(@NotNull BlockState state) {
+        return RenderShape.MODEL;
+    }
+
+    @Nullable @Override
+    public BlockEntity newBlockEntity(@NotNull BlockPos pos, @NotNull BlockState state) {
+        return new MachineAssemblerBlockEntity(pos, state);
+    }
+
+    @Nullable @Override
+    public <T extends BlockEntity> BlockEntityTicker<T> getTicker(@NotNull Level level, @NotNull BlockState state, @NotNull BlockEntityType<T> type) {
+        return createTickerHelper(type, ModBlockEntities.MACHINE_ASSEMBLER_BE.get(), MachineAssemblerBlockEntity::tick);
+    }
+
+    @Nullable @Override
+    public BlockState getStateForPlacement(@NotNull BlockPlaceContext context) {
+        return this.defaultBlockState().setValue(FACING, context.getHorizontalDirection().getOpposite());
+    }
+
+    @Override
+    protected void createBlockStateDefinition(@NotNull StateDefinition.Builder<Block, BlockState> builder) {
+        builder.add(FACING);
+    }
+}

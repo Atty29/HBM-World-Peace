@@ -1,0 +1,458 @@
+package com.hbm_m.radiation;
+
+import com.hbm_m.config.ModClothConfig;
+import com.hbm_m.damagesource.ModDamageSources;
+import com.hbm_m.explosion.command.HbmExplosionCommands;
+import com.hbm_m.extprop.HbmLivingProps;
+import com.hbm_m.hazard.HazardSystem;
+import com.hbm_m.hazard.HazardRegistry;
+import com.hbm_m.lib.RefStrings;
+import com.hbm_m.main.MainRegistry;
+import com.hbm_m.network.ModPacketHandler;
+import com.hbm_m.network.RadiationDataPacket;
+import com.hbm_m.platform.PlayerPersistentData;
+import com.mojang.brigadier.arguments.FloatArgumentType;
+import dev.architectury.event.events.common.CommandRegistrationEvent;
+import dev.architectury.event.events.common.PlayerEvent;
+import dev.architectury.event.events.common.TickEvent;
+import net.minecraft.advancements.Advancement;
+import net.minecraft.advancements.AdvancementProgress;
+import net.minecraft.commands.Commands;
+import net.minecraft.commands.arguments.EntityArgument;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.ServerAdvancementManager;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
+
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.UUID;
+
+
+
+public class PlayerHandler {
+    
+    // Хранит текущий уровень радиации для каждого игрока
+    private static final HashMap<UUID, Float> playerRads = new HashMap<>();
+    
+    // Ключ для хранения радиации в данных игрока
+    private static final String NBT_KEY_PLAYER_RADIATION = "hbm_m_player_radiation";
+
+    // Счетчик тиков для периодического обновления (per-player через UUID)
+    private static final HashMap<UUID, Integer> tickCounters = new HashMap<>();
+
+    /**
+     * Регистрация всех обработчиков событий.
+     * Вызывается один раз при инициализации мода.
+     */
+    public static void register() {
+        PlayerEvent.PLAYER_JOIN.register(PlayerHandler::onPlayerJoin);
+        PlayerEvent.PLAYER_QUIT.register(PlayerHandler::onPlayerQuit);
+        PlayerEvent.PLAYER_RESPAWN.register(PlayerHandler::onPlayerRespawn);
+        TickEvent.PLAYER_POST.register(PlayerHandler::onPlayerTick);
+        CommandRegistrationEvent.EVENT.register(PlayerHandler::onRegisterCommands);
+    }
+
+    /**
+     * Получает уровень радиации игрока
+     * @param player игрок
+     * @return уровень радиации
+     */
+    public static float getPlayerRads(Player player) {
+        if (player == null) return 0;
+        
+        UUID uuid = player.getUUID();
+        Float rad = playerRads.get(uuid);
+        return rad != null ? rad : 0;
+    }
+    
+    /**
+     * Устанавливает уровень радиации игрока
+     * @param player игрок
+     * @param rads новый уровень радиации
+     */
+    public static void setPlayerRads(Player player, float rads) {
+        if (player == null) return;
+
+        UUID uuid = player.getUUID();
+        float clamped = Math.round(Math.max(0, rads) * 10.0f) / 10.0f;
+        playerRads.put(uuid, clamped);
+
+        if (player instanceof ServerPlayer serverPlayer) {
+            if (serverPlayer.connection != null) {
+                float environmentRad = getIncomingEnvironmentRad(serverPlayer);
+
+                ModPacketHandler.sendToPlayer(serverPlayer, ModPacketHandler.RADIATION_DATA,
+                    new RadiationDataPacket(environmentRad, clamped));
+
+                if (ModClothConfig.get().enableDebugLogging) {
+                    MainRegistry.LOGGER.debug("SERVER: Sent RadiationDataPacket (from setPlayerRads) to player {} with EnvRad: {}, PlayerRad: {}", player.getName().getString(), environmentRad, clamped);
+                }
+            }
+        }
+    }
+    
+    /**
+     * Увеличивает уровень радиации игрока
+     * @param player игрок
+     * @param rads величина увеличения
+     */
+    public static void incrementPlayerRads(Player player, float rads) {
+        if (player == null || rads <= 0) return;
+        
+        setPlayerRads(player, getPlayerRads(player) + rads);
+    }
+    
+    /**
+     * Уменьшает уровень радиации игрока
+     * @param player игрок
+     * @param rads величина уменьшения
+     */
+    public static void decrementPlayerRads(Player player, float rads) {
+        if (player == null || rads <= 0) return;
+        
+        setPlayerRads(player, Math.max(0, getPlayerRads(player) - rads));
+    }
+
+    // ═══════════════════════════════════════════
+    // Обработчики событий
+    // ═══════════════════════════════════════════
+
+    /**
+     * Игрок зашёл на сервер — загружаем радиацию из NBT
+     */
+    private static void onPlayerJoin(ServerPlayer serverPlayer) {
+        float rads = 0.0F;
+        CompoundTag persistentData = PlayerPersistentData.get(serverPlayer);
+        if (persistentData.contains(NBT_KEY_PLAYER_RADIATION)) {
+            CompoundTag data = persistentData.getCompound(NBT_KEY_PLAYER_RADIATION);
+            rads = Math.round(data.getFloat("radiationLevel") * 10.0f) / 10.0f;
+        }
+        // Кладём в map без отправки пакета — соединение ещё не полностью установлено
+        playerRads.put(serverPlayer.getUUID(), Math.max(0, rads));
+        MainRegistry.LOGGER.debug("Loaded radiation data for player {}: {} RAD",
+                serverPlayer.getName().getString(), rads);
+    }
+
+    /**
+     * Игрок вышел с сервера — сохраняем радиацию в NBT и чистим map
+     */
+    private static void onPlayerQuit(ServerPlayer serverPlayer) {
+        float rounded = Math.round(getPlayerRads(serverPlayer) * 10.0f) / 10.0f;
+        CompoundTag persistentData = PlayerPersistentData.get(serverPlayer);
+        CompoundTag data = new CompoundTag();
+        data.putFloat("radiationLevel", rounded);
+        persistentData.put(NBT_KEY_PLAYER_RADIATION, data);
+
+        MainRegistry.LOGGER.debug("Saving radiation data for player {}: {} RAD",
+                serverPlayer.getName().getString(), rounded);
+
+        UUID uuid = serverPlayer.getUUID();
+        playerRads.remove(uuid);
+        tickCounters.remove(uuid);
+    }
+
+    /**
+     * Игрок возродился — сбрасываем радиацию
+     * (параметр keepInventory: если true — не сбрасываем, чтобы не злоупотребляли)
+     */
+    private static void onPlayerRespawn(ServerPlayer serverPlayer, boolean conqueredEnd) {
+        // Сброс при смерти, но не при телепортации через End
+        if (!conqueredEnd) {
+            setPlayerRads(serverPlayer, 0F);
+        }
+    }
+
+    /**
+     * Тик игрока — основная логика радиации
+     */
+    private static void onPlayerTick(Player player) {
+        // Выполняем только на сервере
+        if (player.level().isClientSide()) return;
+
+        // Сброс радиации при смерти в любом режиме
+        if (player.isDeadOrDying()) {
+            setPlayerRads(player, 0F);
+            return;
+        }
+
+        if (!ModClothConfig.get().enableRadiation) return;
+
+        UUID uuid = player.getUUID();
+        int counter = tickCounters.getOrDefault(uuid, 0) + 1;
+        tickCounters.put(uuid, counter);
+
+        // Обновляем радиацию каждые 20 тиков (1 секунда)
+        if (counter < 20) return;
+        tickCounters.put(uuid, 0);
+
+        if (!player.isCreative() && !player.isSpectator()) {
+            // Накопление дозы: чанк (EntityEffectHandler) + инвентарь (PlayerHazardHandler) через contaminate → radEnv/radBuf.
+            decrementPlayerRads(player, ModClothConfig.get().radDecay);
+            applyRadiationEffects(player);
+        }
+
+        // Отправляем пакет ВСЕМ игрокам (клиент сам решит, показывать ли эффект в креативе)
+        if (player instanceof ServerPlayer serverPlayer) {
+            float currentAccumulatedRads = getPlayerRads(player);
+            float incomingEnvironmentRad = getIncomingEnvironmentRad(player);
+            ModPacketHandler.sendToPlayer(serverPlayer, ModPacketHandler.RADIATION_DATA,
+                    new RadiationDataPacket(incomingEnvironmentRad, currentAccumulatedRads));
+
+            if (ModClothConfig.get().enableDebugLogging) {
+                MainRegistry.LOGGER.debug(
+                        "SERVER: Sending periodic RadiationDataPacket to player {}. EnvRad (Incoming): {}, PlayerRad (Accumulated): {}",
+                        player.getName().getString(), incomingEnvironmentRad, currentAccumulatedRads);
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════
+    // Вспомогательные методы
+    // ═══════════════════════════════════════════
+
+    /**
+     * Входящая доза среды для HUD/пакета. Как {@code HbmLivingProps.getRadBuf} на гейгере в 1.7.10
+     * (сумма чанка + инвентаря за последнюю секунду через {@code radEnv}).
+     */
+    public static float getIncomingEnvironmentRad(Player player) {
+        if (player == null || !ModClothConfig.get().enableRadiation) {
+            return 0F;
+        }
+        return HbmLivingProps.getRadBuf(player);
+    }
+
+    /**
+     * Возвращает радиацию от всех радиоактивных предметов в инвентаре игрока (за тик)
+     */
+    public static float getInventoryRadiation(Player player) {
+        float totalRads = 0;
+        for (ItemStack stack : player.getInventory().items) {
+            totalRads += getRadiationFromItemStack(stack);
+        }
+        for (ItemStack stack : player.getInventory().armor) {
+            totalRads += getRadiationFromItemStack(stack);
+        }
+        ItemStack offhand = player.getOffhandItem();
+        totalRads += getRadiationFromItemStack(offhand);
+        return totalRads;
+    }
+
+    private static float getRadiationFromItemStack(ItemStack stack) {
+        if (stack.isEmpty()) return 0.0F;
+        float perItemRadiation = HazardSystem.getHazardLevelFromStack(stack, HazardRegistry.RADIATION);
+        return perItemRadiation * stack.getCount();
+    }
+    
+    /**
+     * Применяет эффекты в зависимости от уровня радиации
+     */
+    private static void applyRadiationEffects(Player player) {
+        float rads = getPlayerRads(player);
+
+        // Проверяем достижения
+        if (player instanceof ServerPlayer serverPlayer) {
+            var server = serverPlayer.getServer();
+            if (server != null) {
+                ServerAdvancementManager advancementManager = server.getAdvancements();
+
+                // Достижение "Ура, Радиация!" (200 РАД)
+                //? if fabric && < 1.21.1 {
+                /*Advancement rad200Advancement = advancementManager.getAdvancement(new ResourceLocation(RefStrings.MODID, "radiation_200"));
+                *///?} else {
+                Advancement rad200Advancement = advancementManager.getAdvancement(ResourceLocation.fromNamespaceAndPath(RefStrings.MODID, "radiation_200"));
+                 //?}
+
+                if (rad200Advancement != null) {
+                    AdvancementProgress progress = serverPlayer.getAdvancements().getOrStartProgress(rad200Advancement);
+                    if (!progress.isDone() && rads >= 200.0F) {
+                        if (ModClothConfig.get().enableDebugLogging) {
+                            MainRegistry.LOGGER.debug(
+                                    "SERVER: Checking radiation_200 advancement for player {}. Current rads: {}, isDone: {}",
+                                    serverPlayer.getName().getString(), rads, false);
+                        }
+                        for (String criterion : progress.getRemainingCriteria()) {
+                            serverPlayer.getAdvancements().award(rad200Advancement, criterion);
+                            if (ModClothConfig.get().enableDebugLogging) {
+                                MainRegistry.LOGGER.info(
+                                        "SERVER: Awarded radiation_200 advancement to player {} for criterion {}",
+                                        serverPlayer.getName().getString(), criterion);
+                            }
+                        }
+                    }
+                }
+
+                // Испытание "Ай, Радиация!" (1000 РАД)
+                //? if fabric && < 1.21.1 {
+                /*Advancement rad1000Advancement = advancementManager.getAdvancement(new ResourceLocation(RefStrings.MODID, "radiation_1000"));
+                *///?} else {
+                Advancement rad1000Advancement = advancementManager.getAdvancement(ResourceLocation.fromNamespaceAndPath(RefStrings.MODID, "radiation_1000"));
+                 //?}
+
+                if (rad1000Advancement != null) {
+                    AdvancementProgress progress = serverPlayer.getAdvancements().getOrStartProgress(rad1000Advancement);
+                    if (!progress.isDone() && rads >= ModClothConfig.get().maxPlayerRad) {
+                        if (ModClothConfig.get().enableDebugLogging) {
+                            MainRegistry.LOGGER.debug(
+                                    "SERVER: Checking radiation_1000 advancement for player {}. Current rads: {}, isDone: {}",
+                                    serverPlayer.getName().getString(), rads, false);
+                        }
+                        for (String criterion : progress.getRemainingCriteria()) {
+                            serverPlayer.getAdvancements().award(rad1000Advancement, criterion);
+                            if (ModClothConfig.get().enableDebugLogging) {
+                                MainRegistry.LOGGER.info(
+                                        "SERVER: Awarded radiation_1000 advancement to player {} for criterion {}",
+                                        serverPlayer.getName().getString(), criterion);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Летальный порог (конфиг maxPlayerRad; у мобов в EntityEffectHandler — 1000 RAD как в 1.7.10)
+        if (rads >= ModClothConfig.get().maxPlayerRad) {
+            MainRegistry.LOGGER.debug(
+                    "SERVER: Player {} radiation ({}) reached maxPlayerRad ({}). Killing player and resetting radiation.",
+                    player.getName().getString(), rads, ModClothConfig.get().maxPlayerRad);
+            player.hurt(ModDamageSources.radiation(player.level()), Float.MAX_VALUE);
+            setPlayerRads(player, 0F);
+            return;
+        }
+
+        if (rads > ModClothConfig.get().radDamageThreshold) {
+            player.hurt(player.damageSources().magic(), ModClothConfig.get().radDamage);
+        }
+        if (rads > ModClothConfig.get().radBlindness) {
+            player.addEffect(new MobEffectInstance(MobEffects.BLINDNESS, 220, 0));
+        }
+        if (rads > ModClothConfig.get().radConfusion) {
+            // Тошнота (CONFUSION): усиленный порог, как confusion 5*30 у мобов при eRad >= 400
+            player.addEffect(new MobEffectInstance(MobEffects.CONFUSION, 150, 0));
+        }
+        if (rads > ModClothConfig.get().radWater) {
+            player.addEffect(new MobEffectInstance(MobEffects.WEAKNESS, 220, 2));
+        }
+        if (rads > ModClothConfig.get().radSickness) {
+            // radSickness = порог тошноты (CONFUSION в MC); hunger/poison — доп. симптомы
+            player.addEffect(new MobEffectInstance(MobEffects.CONFUSION, 100, 0));
+            player.addEffect(new MobEffectInstance(MobEffects.HUNGER, 220, 0));
+            player.addEffect(new MobEffectInstance(MobEffects.POISON, 220, 0));
+        }
+    }
+    
+    /**
+     * Регистрация команд радиации
+     */
+    private static void onRegisterCommands(
+            com.mojang.brigadier.CommandDispatcher<net.minecraft.commands.CommandSourceStack> dispatcher,
+            net.minecraft.commands.CommandBuildContext buildContext,
+            Commands.CommandSelection selection) {
+        // ═══════════════════════════════════════════════════════
+        // СЕРВЕРНЫЕ КОМАНДЫ: Команды радиации (работают везде)
+        // ═══════════════════════════════════════════════════════
+        dispatcher.register(
+            Commands.literal(RefStrings.MODID)
+                .then(HbmExplosionCommands.buildExplosionBranch())
+                .then(Commands.literal("rad")
+                    .then(Commands.argument("targets", EntityArgument.entities())
+                        .then(Commands.literal("clear")
+                            .executes(ctx -> {
+                                Collection<? extends Entity> targets = EntityArgument.getEntities(ctx, "targets");
+                                final int[] count = {0};
+                                for (Entity e : targets) {
+                                    if (e instanceof Player p) {
+                                        setPlayerRads(p, 0F);
+                                        count[0]++;
+                                    }
+                                }
+                                ctx.getSource().sendSuccess(() -> Component.translatable("commands.hbm_m.rad.cleared", count[0]), true);
+                                return count[0];
+                            })
+                        )
+                        .then(Commands.literal("add")
+                            .then(Commands.argument("amount", FloatArgumentType.floatArg())
+                                .executes(ctx -> {
+                                    float amount = FloatArgumentType.getFloat(ctx, "amount");
+                                    Collection<? extends Entity> targets = EntityArgument.getEntities(ctx, "targets");
+                                    final int[] count = {0};
+                                    for (Entity e : targets) {
+                                        if (e instanceof Player p) {
+                                            incrementPlayerRads(p, amount);
+                                            count[0]++;
+                                        }
+                                    }
+                                    ctx.getSource().sendSuccess(() -> Component.translatable("commands.hbm_m.rad.added", amount, count[0]), true);
+                                    return count[0];
+                                })
+                            )
+                        )
+                        .then(Commands.literal("remove")
+                            .then(Commands.argument("amount", FloatArgumentType.floatArg())
+                                .executes(ctx -> {
+                                    float amount = FloatArgumentType.getFloat(ctx, "amount");
+                                    Collection<? extends Entity> targets = EntityArgument.getEntities(ctx, "targets");
+                                    final int[] count = {0};
+                                    for (Entity e : targets) {
+                                        if (e instanceof Player p) {
+                                            decrementPlayerRads(p, amount);
+                                            count[0]++;
+                                        }
+                                    }
+                                    ctx.getSource().sendSuccess(() -> Component.translatable("commands.hbm_m.rad.removed", amount, count[0]), true);
+                                    return count[0];
+                                })
+                            )
+                        )
+                    )
+                    // Без targets - по умолчанию @s
+                    .then(Commands.literal("clear")
+                        .executes(ctx -> {
+                            Entity self = ctx.getSource().getEntity();
+                            if (self instanceof Player p) {
+                                setPlayerRads(p, 0F);
+                                ctx.getSource().sendSuccess(() -> Component.translatable("commands.hbm_m.rad.cleared.self"), true);
+                                return 1;
+                            }
+                            return 0;
+                        })
+                    )
+                    .then(Commands.literal("add")
+                        .then(Commands.argument("amount", FloatArgumentType.floatArg())
+                            .executes(ctx -> {
+                                Entity self = ctx.getSource().getEntity();
+                                float amount = FloatArgumentType.getFloat(ctx, "amount");
+                                if (self instanceof Player p) {
+                                    incrementPlayerRads(p, amount);
+                                    ctx.getSource().sendSuccess(() -> Component.translatable("commands.hbm_m.rad.added.self", amount), true);
+                                    return 1;
+                                }
+                                return 0;
+                            })
+                        )
+                    )
+                    .then(Commands.literal("remove")
+                        .then(Commands.argument("amount", FloatArgumentType.floatArg())
+                            .executes(ctx -> {
+                                Entity self = ctx.getSource().getEntity();
+                                float amount = FloatArgumentType.getFloat(ctx, "amount");
+                                if (self instanceof Player p) {
+                                    decrementPlayerRads(p, amount);
+                                    ctx.getSource().sendSuccess(() -> Component.translatable("commands.hbm_m.rad.removed.self", amount), true);
+                                    return 1;
+                                }
+                                return 0;
+                            })
+                        )
+                    )
+                )
+        );
+        
+    }
+}

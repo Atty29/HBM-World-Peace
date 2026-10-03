@@ -1,0 +1,63 @@
+{
+  "loader": "forge:composite",
+  "textures": {
+    "particle": "hbm_m:block/machine/wood_burner"
+  },
+  "children": {
+    "wood_burner_model": {
+      "loader": "forge:obj",
+      "model": "hbm_m:models/block/machines/wood_burner.obj",
+      "flip_v": true,
+      "textures": {
+        "default": "hbm_m:block/machine/wood_burner"
+      }
+    }
+  },
+  "transform": {
+    "translation": [-1, 0, -1],
+    "rotation": [0, 180, 0],
+    "scale": 1.0
+  },
+  "display": {
+    "thirdperson_righthand": {
+        "rotation": [ 43, 235, 358 ],
+        "translation": [ 4.50, 2.00, -0.25 ],
+        "scale": [ 0.25, 0.25, 0.25 ]
+    },
+    "thirdperson_lefthand": {
+        "rotation": [ 75, 45, 0 ],
+        "translation": [ -0.50, 2.00, 0.00 ],
+        "scale": [ 0.30, 0.30, 0.30 ]
+    },
+    "firstperson_righthand": {
+        "rotation": [ 0, 118, 0 ],
+        "translation": [ 1.75, 0.50, 0.00 ],
+        "scale": [ 0.25, 0.23, 0.25 ]
+    },
+    "firstperson_lefthand": {
+        "rotation": [ 0, 0, 0 ],
+        "translation": [ 0.00, 0.00, 0.00 ],
+        "scale": [ 1.00, 1.00, 1.00 ]
+    },
+    "gui": {
+        "rotation": [ 30, 43, 0 ],
+        "translation": [ -2.05, -3.70, 0.00 ],
+        "scale": [ 0.22, 0.22, 0.22 ]
+    },
+    "head": {
+        "rotation": [ 0, 0, 0 ],
+        "translation": [ 0.00, 0.00, 0.00 ],
+        "scale": [ 1.00, 1.00, 1.00 ]
+    },
+    "fixed": {
+        "rotation": [ 0, 270, 0 ],
+        "translation": [ 2.25, -13.25, -6.75 ],
+        "scale": [ 0.35, 0.35, 0.35 ]
+    },
+    "ground": {
+        "rotation": [ 0, 0, 0 ],
+        "translation": [ 0.00, 3.00, 0.00 ],
+        "scale": [ 0.25, 0.25, 0.25 ]
+    }
+}
+}

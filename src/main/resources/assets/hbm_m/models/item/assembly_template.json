@@ -1,0 +1,7 @@
+{
+  "parent": "minecraft:item/generated",
+  "loader": "hbm_m:template_loader",
+  "textures": {
+    "layer0": "hbm_m:item/assembly_template"
+  }
+}

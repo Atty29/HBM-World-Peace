@@ -1,0 +1,392 @@
+package com.hbm_m.explosion;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.phys.Vec3;
+
+/**
+ * chunk-by-chunk "crater" for Fat Man / MK5.
+ * Do not confuse with {@link com.hbm_m.util.explosions.nuclear.CraterGenerator} (used by other charges).
+ */
+public class NukeMk5ChunkEater implements IExplosionRay {
+
+    public final Map<ChunkPos, List<FloatTriplet>> perChunk = new HashMap<>();
+    public final List<ChunkPos> orderedChunks = new ArrayList<>();
+    private final CoordComparator comparator = new CoordComparator();
+
+    private final int posX;
+    private final int posY;
+    private final int posZ;
+    private final Level level;
+    private final int strength;
+    private final int length;
+    private final int speed;
+
+    private int gspNumMax;
+    private int gspNum;
+    private double gspX;
+    private double gspY;
+
+    public boolean isAusf3Complete = false;
+
+    public NukeMk5ChunkEater(Level level, int x, int y, int z, int strength, int speed, int length) {
+        this.level = level;
+        this.posX = x;
+        this.posY = y;
+        this.posZ = z;
+        this.strength = strength;
+        this.speed = speed;
+        this.length = length;
+        this.gspNumMax = (int) (2.5 * Math.PI * Math.pow(this.strength, 2));
+        this.gspNum = 1;
+        this.gspX = Math.PI;
+        this.gspY = 0.0;
+    }
+
+    private void generateGspUp() {
+        if (this.gspNum < this.gspNumMax) {
+            int k = this.gspNum + 1;
+            double hk = -1.0 + 2.0 * (k - 1.0) / (this.gspNumMax - 1.0);
+            this.gspX = Math.acos(hk);
+            double prevLon = this.gspY;
+            double lon = prevLon + 3.6 / Math.sqrt(this.gspNumMax) / Math.sqrt(1.0 - hk * hk);
+            this.gspY = lon % (Math.PI * 2);
+        } else {
+            this.gspX = 0.0;
+            this.gspY = 0.0;
+        }
+        this.gspNum++;
+    }
+
+    private Vec3 getSpherical2cartesian() {
+        double dx = Math.sin(this.gspX) * Math.cos(this.gspY);
+        double dz = Math.sin(this.gspX) * Math.sin(this.gspY);
+        double dy = Math.cos(this.gspX);
+        return new Vec3(dx, dy, dz);
+    }
+
+    public void collectTip(int count) {
+        int amountProcessed = 0;
+        int rayLength = (int) Math.ceil(strength);
+
+        while (this.gspNumMax >= this.gspNum) {
+            Vec3 vec = this.getSpherical2cartesian();
+            float res = strength;
+            FloatTriplet lastPos = null;
+            Set<ChunkPos> chunkCoords = new HashSet<>();
+
+            for (int i = 0; i < rayLength; i++) {
+                if (i > this.length) break;
+
+                float x0 = (float) (posX + (vec.x * i));
+                float y0 = (float) (posY + (vec.y * i));
+                float z0 = (float) (posZ + (vec.z * i));
+
+                int iX = (int) Math.floor(x0);
+                int iY = (int) Math.floor(y0);
+                int iZ = (int) Math.floor(z0);
+
+                double fac = 100 - ((double) i) / ((double) rayLength) * 100;
+                fac *= 0.07D;
+
+                BlockPos pos = new BlockPos(iX, iY, iZ);
+                BlockState state = level.getBlockState(pos);
+
+                if (state.getFluidState().isEmpty()) {
+                    res -= (float) Math.pow(masqueradeResistance(level, state, pos), 7.5D - fac);
+                }
+
+                if (res > 0 && !state.isAir()) {
+                    lastPos = new FloatTriplet(x0, y0, z0);
+                    ChunkPos chunkPos = new ChunkPos(iX >> 4, iZ >> 4);
+                    chunkCoords.add(chunkPos);
+                }
+
+                if (res <= 0 || i + 1 >= this.length || i == rayLength - 1) {
+                    break;
+                }
+            }
+
+            for (ChunkPos pos : chunkCoords) {
+                List<FloatTriplet> triplets = perChunk.get(pos);
+                if (triplets == null) {
+                    triplets = new ArrayList<>();
+                    perChunk.put(pos, triplets);
+                }
+                if (lastPos != null) {
+                    triplets.add(lastPos);
+                }
+            }
+
+            this.generateGspUp();
+            amountProcessed++;
+            if (amountProcessed >= count) {
+                return;
+            }
+        }
+
+        orderedChunks.addAll(perChunk.keySet());
+        orderedChunks.sort(comparator);
+        isAusf3Complete = true;
+    }
+
+    public static float masqueradeResistance(Level level, BlockState state, BlockPos pos) {
+        Block block = state.getBlock();
+        if (block == Blocks.SANDSTONE) {
+            return Blocks.STONE.getExplosionResistance();
+        }
+        if (block == Blocks.OBSIDIAN) {
+            return Blocks.STONE.getExplosionResistance() * 3;
+        }
+        return state.getBlock().getExplosionResistance();
+    }
+
+    private class CoordComparator implements Comparator<ChunkPos> {
+        @Override
+        public int compare(ChunkPos o1, ChunkPos o2) {
+            int chunkX = posX >> 4;
+            int chunkZ = posZ >> 4;
+            int diff1 = Math.abs(chunkX - o1.x) + Math.abs(chunkZ - o1.z);
+            int diff2 = Math.abs(chunkX - o2.x) + Math.abs(chunkZ - o2.z);
+            return diff1 - diff2;
+        }
+    }
+
+    public void processChunk() {
+        if (this.perChunk.isEmpty()) return;
+
+        ChunkPos coord = orderedChunks.get(0);
+        List<FloatTriplet> list = perChunk.get(coord);
+        Set<BlockPos> toRem = new HashSet<>();
+        Set<BlockPos> toRemTips = new HashSet<>();
+
+        int chunkX = coord.x;
+        int chunkZ = coord.z;
+
+        int enter = Math.min(
+                Math.abs(posX - (chunkX << 4)),
+                Math.abs(posZ - (chunkZ << 4))) - 16;
+        enter = Math.max(enter, 0);
+
+        for (FloatTriplet triplet : list) {
+            float x = triplet.xCoord;
+            float y = triplet.yCoord;
+            float z = triplet.zCoord;
+            Vec3 vec = new Vec3(x - this.posX, y - this.posY, z - this.posZ);
+            double len = vec.length();
+            if (len <= 0) continue;
+            double pX = vec.x / len;
+            double pY = vec.y / len;
+            double pZ = vec.z / len;
+
+            int tipX = (int) Math.floor(x);
+            int tipY = (int) Math.floor(y);
+            int tipZ = (int) Math.floor(z);
+
+            boolean inChunk = false;
+            BlockPos.MutableBlockPos mutablePos = new BlockPos.MutableBlockPos();
+            for (int i = enter; i < len; i++) {
+                int x0 = (int) Math.floor(posX + pX * i);
+                int y0 = (int) Math.floor(posY + pY * i);
+                int z0 = (int) Math.floor(posZ + pZ * i);
+
+                mutablePos.set(x0, y0, z0);
+                BlockState state = level.getBlockState(mutablePos);
+
+                if ((x0 >> 4) != chunkX || (z0 >> 4) != chunkZ) {
+                    if (inChunk) {
+                        break;
+                    } else {
+                        continue;
+                    }
+                }
+                inChunk = true;
+
+                if (shouldClearBlock(state)) {
+                    BlockPos pos = new BlockPos(x0, y0, z0);
+                    if (x0 == tipX && y0 == tipY && z0 == tipZ) {
+                        toRemTips.add(pos);
+                    }
+                    toRem.add(pos);
+                }
+            }
+        }
+
+        for (BlockPos pos : toRem) {
+            if (toRemTips.contains(pos)) {
+                handleTip(pos.getX(), pos.getY(), pos.getZ());
+            } else {
+                clearBlock(pos);
+            }
+        }
+
+        clearFluidsInChunkColumn(chunkX, chunkZ);
+
+        perChunk.remove(coord);
+        orderedChunks.remove(0);
+    }
+
+    /** Удаляет жидкости в колонке чанка внутри радиуса кратера (1.20: иначе остаются полоски воды). */
+    private void clearFluidsInChunkColumn(int chunkX, int chunkZ) {
+        int minX = chunkX << 4;
+        int maxX = minX + 15;
+        int minZ = chunkZ << 4;
+        int maxZ = minZ + 15;
+        int maxR = this.length;
+        int maxRSq = maxR * maxR;
+        int minY = level.getMinBuildHeight();
+        int maxY = level.getMaxBuildHeight();
+        BlockPos.MutableBlockPos mutablePos = new BlockPos.MutableBlockPos();
+
+        // [FIX] Сканируем ПОЛНУЮ высоту колонки (minY..maxY), а не surfaceY+16.
+        // После прохода лучей heightmap падает до дна кратера, и вода на уровне
+        // океана оказывалась выше surfaceY+16 → не сканировалась → оставалась сеткой.
+        // Границы расширены на 1 блок для перекрытия стыков чанков.
+        for (int x = minX - 1; x <= maxX + 1; x++) {
+            for (int z = minZ - 1; z <= maxZ + 1; z++) {
+                double dx = x + 0.5D - posX;
+                double dz = z + 0.5D - posZ;
+                if (dx * dx + dz * dz > (double) maxRSq) {
+                    continue;
+                }
+                for (int y = minY; y < maxY; y++) {
+                    mutablePos.set(x, y, z);
+                    BlockState state = level.getBlockState(mutablePos);
+                    if (!state.getFluidState().isEmpty()) {
+                        clearBlock(mutablePos);
+                    }
+                }
+            }
+        }
+    }
+
+    private boolean fluidsCleared = false;
+    private boolean fluidClearInProgress = false;
+    private int fluidClearCursorX;
+
+    /** Финальный проход по сфере — убирает воду, просочившуюся между тиками обработки чанков. */
+    public void clearRemainingFluidsInCrater(int budgetMs) {
+        if (fluidsCleared) {
+            return;
+        }
+
+        int maxR = this.length;
+        if (!fluidClearInProgress) {
+            fluidClearInProgress = true;
+            fluidClearCursorX = posX - maxR;
+        }
+
+        long deadline = System.currentTimeMillis() + budgetMs;
+        BlockPos.MutableBlockPos mutablePos = new BlockPos.MutableBlockPos();
+        int minY = level.getMinBuildHeight();
+        int maxY = level.getMaxBuildHeight();
+
+        outer:
+        for (; fluidClearCursorX <= posX + maxR; fluidClearCursorX++) {
+            for (int z = posZ - maxR; z <= posZ + maxR; z++) {
+                if (System.currentTimeMillis() >= deadline) {
+                    break outer;
+                }
+
+                double dx = fluidClearCursorX + 0.5D - posX;
+                double dz = z + 0.5D - posZ;
+                if (dx * dx + dz * dz > (double) maxR * maxR) {
+                    continue;
+                }
+
+                // [FIX] Полная высота колонки (см. комментарий в clearFluidsInChunkColumn)
+                for (int y = minY; y < maxY; y++) {
+                    mutablePos.set(fluidClearCursorX, y, z);
+                    if (!level.getBlockState(mutablePos).getFluidState().isEmpty()) {
+                        clearBlock(mutablePos);
+                    }
+                }
+            }
+        }
+
+        if (fluidClearCursorX > posX + maxR) {
+            fluidsCleared = true;
+        }
+    }
+
+    protected void handleTip(int x, int y, int z) {
+        clearBlock(new BlockPos(x, y, z));
+    }
+
+    /**
+     * Удаляет блок/жидкость.
+     * [FIX] Level.removeBlock(pos, false) — это NO-OP для жидкостей в ванилле 1.20.1:
+     * он вызывает setBlock(pos, fluidstate.createLegacyBlock(), 3), т.е. ставит воду
+     * ОБРАТНО. Поэтому используем setBlock(AIR) напрямую.
+     * Флаг UPDATE_CLIENTS (2) — без neighbor-update, чтобы соседние source-блоки
+     * не получили уведомления и не затекли обратно.
+     */
+    private void clearBlock(BlockPos pos) {
+        BlockState state = level.getBlockState(pos);
+        if (state.isAir() && state.getFluidState().isEmpty()) return;
+        // [FIX] flag UPDATE_CLIENTS | UPDATE_IMMEDIATE (18):
+        // UPDATE_IMMEDIATE пропускает updateNeighbourShapes в Level.markAndNotifyBlock,
+        // иначе соседняя вода получает neighborChanged и растекается.
+        level.setBlock(pos, Blocks.AIR.defaultBlockState(), Block.UPDATE_CLIENTS | Block.UPDATE_IMMEDIATE);
+    }
+
+    private static boolean shouldClearBlock(BlockState state) {
+        return !state.isAir() || !state.getFluidState().isEmpty();
+    }
+
+    @Override
+    public boolean isComplete() {
+        return isAusf3Complete && perChunk.isEmpty();
+    }
+
+    @Override
+    public void cacheChunksTick(int processTimeMs) {
+        if (!isAusf3Complete) {
+            collectTip(speed * 10);
+        }
+    }
+
+    @Override
+    public void destructionTick(int processTimeMs) {
+        if (!isAusf3Complete) return;
+        long start = System.currentTimeMillis();
+        while (!perChunk.isEmpty() && System.currentTimeMillis() < start + processTimeMs) {
+            processChunk();
+        }
+        if (isAusf3Complete && perChunk.isEmpty()) {
+            clearRemainingFluidsInCrater(processTimeMs);
+        }
+    }
+
+    @Override
+    public void cancel() {
+        isAusf3Complete = true;
+        if (perChunk != null) perChunk.clear();
+        if (orderedChunks != null) orderedChunks.clear();
+    }
+
+    public static class FloatTriplet {
+        public final float xCoord;
+        public final float yCoord;
+        public final float zCoord;
+
+        public FloatTriplet(float x, float y, float z) {
+            this.xCoord = x;
+            this.yCoord = y;
+            this.zCoord = z;
+        }
+    }
+}

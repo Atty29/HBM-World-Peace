@@ -1,0 +1,471 @@
+package com.hbm_m.explosion.command;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Objects;
+import java.util.Random;
+
+import com.hbm_m.block.ModBlocks;
+import com.hbm_m.interfaces.IDetonatable;
+import com.hbm_m.particle.ModExplosionParticles;
+import com.hbm_m.particle.explosions.basic.ExplosionParticleUtils;
+import com.hbm_m.particle.explosions.nuclear.medium.MediumNuclearMushroomCloud;
+import com.hbm_m.sound.ModSounds;
+import com.hbm_m.util.explosions.general.ShockwaveGenerator;
+import com.hbm_m.util.explosions.nuclear.CraterGenerationFlags;
+import com.hbm_m.util.explosions.nuclear.CraterGenerator;
+import com.hbm_m.util.explosions.nuclear.NuclearExplosionHelper;
+
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.particles.SimpleParticleType;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.TickTask;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.AABB;
+
+/**
+ * Запуск ядерных сценариев из команд и блоков (единая точка логики).
+ */
+public final class NuclearScenarioLaunchers {
+
+    private static final Random RANDOM = new Random();
+
+    private NuclearScenarioLaunchers() {}
+
+    // --- Prototype atomic bomb ---
+    private static final int PROTOTYPE_SPHERE_RADIUS = 150;
+
+    public static void launchPrototype(ServerLevel level, BlockPos pos, ExplosionCommandOptions opt) {
+        double x = pos.getX() + 0.5;
+        double y = pos.getY() + 0.5;
+        double z = pos.getZ() + 0.5;
+
+        if (opt.sound()) {
+            NuclearExplosionHelper.playStandardDetonationSound(level, x, y, z);
+        }
+        if (opt.particles()) {
+            scheduleAnimatedNuclearExplosion(level, x, y, z);
+        }
+        // Pure sphere removal — no sellafield, no radiation, no fallout
+        MinecraftServer server = level.getServer();
+        if (server != null && opt.crater()) {
+            int r = Math.round(PROTOTYPE_SPHERE_RADIUS * opt.amplifier());
+            server.tell(new TickTask(server.getTickCount() + 40, () ->
+                    excavateSphere(level, pos, r)));
+        }
+    }
+
+    // Time-budgeted excavation: each tick does as much work as fits in this nanosecond
+    // budget, then yields. This keeps single-tick lag spikes bounded regardless of the
+    // sphere radius, while still adapting to how fast the server actually is.
+    private static final long EXCAVATE_TIME_BUDGET_NANOS = 8_000_000L; // ~8ms/tick
+    private static final int EXCAVATE_TIME_CHECK_INTERVAL = 256;       // blocks between time checks
+
+    private static void excavateSphere(ServerLevel level, BlockPos center, int radius) {
+        int cx = center.getX();
+        int cy = center.getY();
+        int cz = center.getZ();
+        long rSq = (long) radius * radius;
+
+        // Build column list: for each (dx,dz) inside the circle, store the Y half-height.
+        // ~π*r² entries vs ~(4/3)π*r³ block objects — vastly less memory.
+        List<int[]> columns = new ArrayList<>();
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                long dxzSq = (long) dx*dx + (long) dz*dz;
+                if (dxzSq <= rSq) {
+                    int dyMax = (int) Math.sqrt(rSq - dxzSq);
+                    columns.add(new int[]{dx, dz, dyMax});
+                }
+            }
+        }
+
+        MinecraftServer server = level.getServer();
+        if (server == null) return;
+
+        int baseTick = server.getTickCount() + 40;
+        server.tell(new TickTask(baseTick, () ->
+                processExcavationBatch(level, columns, cx, cy, cz, 0, Integer.MIN_VALUE)));
+    }
+
+    private static void processExcavationBatch(ServerLevel level, List<int[]> columns, int cx, int cy, int cz,
+                                                 int columnIndex, int dyStart) {
+        MinecraftServer server = level.getServer();
+        if (server == null) return;
+
+        long startTime = System.nanoTime();
+        int dy = dyStart;
+        int processedSinceCheck = 0;
+
+        while (columnIndex < columns.size()) {
+            int[] col = columns.get(columnIndex);
+            int dyMax = col[2];
+            if (dy == Integer.MIN_VALUE) {
+                dy = -dyMax;
+            }
+
+            int x = cx + col[0];
+            int z = cz + col[1];
+
+            while (dy <= dyMax) {
+                int worldY = cy + dy;
+                if (worldY >= level.getMinBuildHeight() && worldY < level.getMaxBuildHeight()) {
+                    BlockPos p = new BlockPos(x, worldY, z);
+                    BlockState state = level.getBlockState(p);
+                    if (!state.isAir() && !state.is(net.minecraft.tags.BlockTags.FEATURES_CANNOT_REPLACE)) {
+                        // Flag 2 (clients only, no neighbor updates) avoids the redstone/
+                        // physics/light update cascade that flag 3 would trigger for every
+                        // single removed block — this is the main TPS killer at this scale.
+                        level.setBlock(p, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(), 2);
+                    }
+                }
+                dy++;
+                processedSinceCheck++;
+
+                if (processedSinceCheck >= EXCAVATE_TIME_CHECK_INTERVAL) {
+                    if (System.nanoTime() - startTime >= EXCAVATE_TIME_BUDGET_NANOS) {
+                        final int nextColumnIndex = columnIndex;
+                        final int nextDy = dy;
+                        server.tell(new TickTask(server.getTickCount() + 1, () ->
+                                processExcavationBatch(level, columns, cx, cy, cz, nextColumnIndex, nextDy)));
+                        return;
+                    }
+                    processedSinceCheck = 0;
+                }
+            }
+
+            columnIndex++;
+            dy = Integer.MIN_VALUE;
+        }
+    }
+
+    // --- Nuclear charge (animated) ---
+    private static final float CHARGE_EXPLOSION_POWER = 25.0F;
+    private static final int CHARGE_CRATER_DELAY = 40;
+
+    public static void launchNuclearCharge(ServerLevel serverLevel, BlockPos pos, ExplosionCommandOptions opt) {
+        double x = pos.getX() + 0.5;
+        double y = pos.getY() + 0.5;
+        double z = pos.getZ() + 0.5;
+        float power = CHARGE_EXPLOSION_POWER * opt.amplifier();
+
+        if (opt.sound()) {
+            NuclearExplosionHelper.playStandardDetonationSound(serverLevel, x, y, z);
+        }
+
+        if (opt.damage()) {
+            serverLevel.explode(null, x, y, z, power, Level.ExplosionInteraction.NONE);
+        }
+        if (opt.particles()) {
+            scheduleAnimatedNuclearExplosion(serverLevel, x, y, z);
+        }
+        if (opt.crater()) {
+            CraterGenerationFlags flags = new CraterGenerationFlags(opt.biomes(), opt.damage());
+            scheduleCraterGeneration(serverLevel, pos, CHARGE_CRATER_DELAY, flags);
+        }
+    }
+
+    private static void scheduleAnimatedNuclearExplosion(ServerLevel level, double x, double y, double z) {
+        MinecraftServer server = level.getServer();
+        if (server == null) {
+            return;
+        }
+        level.sendParticles((SimpleParticleType) ModExplosionParticles.FLASH.get(), x, y, z, 1, 0, 0, 0, 0);
+        MediumNuclearMushroomCloud.spawnBlackSphere(level, x, y, z, level.random);
+
+        server.tell(new TickTask(level.getServer().getTickCount() + 2, () ->
+                MediumNuclearMushroomCloud.spawnShockwaveRing(level, x, y, z, level.random)));
+
+        for (int i = 0; i < 10; i++) {
+            final int step = i;
+            server.tell(new TickTask(level.getServer().getTickCount() + 5 + i, () -> {
+                double currentY = y + (step * 2.0);
+                MediumNuclearMushroomCloud.spawnStemSegment(level, x, currentY, z, level.random);
+            }));
+        }
+
+        server.tell(new TickTask(level.getServer().getTickCount() + 8, () ->
+                MediumNuclearMushroomCloud.spawnMushroomBase(level, x, y, z, level.random)));
+
+        server.tell(new TickTask(level.getServer().getTickCount() + 18, () ->
+                MediumNuclearMushroomCloud.spawnMushroomCap(level, x, y, z, level.random)));
+
+        server.tell(new TickTask(level.getServer().getTickCount() + 22, () ->
+                MediumNuclearMushroomCloud.spawnCondensationRing(level, x, y + 15, z, level.random)));
+    }
+
+    private static void scheduleCraterGeneration(ServerLevel level, BlockPos pos, int delayTicks, CraterGenerationFlags flags) {
+        MinecraftServer server = level.getServer();
+        if (server == null) {
+            return;
+        }
+        server.tell(new TickTask(level.getServer().getTickCount() + delayTicks, () ->
+                CraterGenerator.generateCrater(
+                        level, pos,
+                        ModBlocks.SELLAFIELD_SLAKED.get(), ModBlocks.SELLAFIELD_SLAKED1.get(),
+                        ModBlocks.SELLAFIELD_SLAKED2.get(), ModBlocks.SELLAFIELD_SLAKED3.get(),
+                        ModBlocks.WASTE_LOG.get(), ModBlocks.WASTE_PLANKS.get(),
+                        ModBlocks.BURNED_GRASS.get(), ModBlocks.DEAD_DIRT.get(),
+                        flags
+                )));
+    }
+
+    // --- Dud nuke ---
+    private static final float DUD_EXPLOSION_POWER = 25.0F;
+    private static final int DUD_CRATER_DELAY = 30;
+
+    public static void launchDudNuke(ServerLevel serverLevel, BlockPos pos, ExplosionCommandOptions opt) {
+        double x = pos.getX() + 0.5;
+        double y = pos.getY() + 0.5;
+        double z = pos.getZ() + 0.5;
+        float power = DUD_EXPLOSION_POWER * opt.amplifier();
+
+        if (opt.sound()) {
+            NuclearExplosionHelper.playStandardDetonationSound(serverLevel, x, y, z);
+        }
+
+        if (opt.damage()) {
+            serverLevel.explode(null, x, y, z, power, Level.ExplosionInteraction.NONE);
+        }
+        if (opt.particles()) {
+            scheduleDudExplosionEffects(serverLevel, x, y, z);
+        }
+        if (opt.crater()) {
+            CraterGenerationFlags flags = new CraterGenerationFlags(opt.biomes(), opt.damage());
+            MinecraftServer server = serverLevel.getServer();
+            if (server != null) {
+                server.tell(new TickTask(server.getTickCount() + DUD_CRATER_DELAY, () ->
+                        CraterGenerator.generateCrater(
+                                serverLevel, pos,
+                                ModBlocks.SELLAFIELD_SLAKED.get(),
+                                ModBlocks.SELLAFIELD_SLAKED1.get(),
+                                ModBlocks.SELLAFIELD_SLAKED2.get(),
+                                ModBlocks.SELLAFIELD_SLAKED3.get(),
+                                ModBlocks.WASTE_LOG.get(),
+                                ModBlocks.WASTE_PLANKS.get(),
+                                ModBlocks.BURNED_GRASS.get(),
+                                ModBlocks.DEAD_DIRT.get(),
+                                flags
+                        )));
+            }
+        }
+    }
+
+    private static void scheduleDudExplosionEffects(ServerLevel level, double x, double y, double z) {
+        level.sendParticles((SimpleParticleType) ModExplosionParticles.FLASH.get(), x, y, z, 1, 0, 0, 0, 0);
+        ExplosionParticleUtils.spawnAirBombSparks(level, x, y, z);
+        MinecraftServer server = level.getServer();
+        if (server != null) {
+            server.tell(new TickTask(3, () ->
+                    ExplosionParticleUtils.spawnAirBombShockwave(level, x, y, z)));
+            server.tell(new TickTask(8, () ->
+                    ExplosionParticleUtils.spawnAirBombMushroomCloud(level, x, y, z)));
+        }
+    }
+
+    // --- Mine nuke ---
+    private static final float MINE_EXPLOSION_POWER = 20.0F;
+    private static final int MINE_CRATER_RADIUS = 20;
+    private static final int MINE_CRATER_DEPTH = 3;
+    private static final float MINE_DAMAGE_RADIUS = 30.0f;
+    private static final float MINE_DAMAGE_AMOUNT = 200.0f;
+    private static final float MINE_MAX_DAMAGE_DISTANCE = 25.0f;
+
+    public static void launchMineNuke(ServerLevel serverLevel, BlockPos pos, ExplosionCommandOptions opt) {
+        double x = pos.getX() + 0.5;
+        double y = pos.getY() + 0.5;
+        double z = pos.getZ() + 0.5;
+        float power = MINE_EXPLOSION_POWER * opt.amplifier();
+
+        if (opt.sound()) {
+            playRandomMineSound(serverLevel, pos);
+        }
+
+        if (opt.damage()) {
+            serverLevel.explode(null, x, y, z, power, false, Level.ExplosionInteraction.TNT);
+            dealMineExplosionDamage(serverLevel, x, y, z, opt.amplifier());
+        } else {
+            serverLevel.explode(null, x, y, z, 0.0F, false, Level.ExplosionInteraction.NONE);
+        }
+
+        if (opt.particles()) {
+            ExplosionParticleUtils.spawnFullNuclearExplosion(serverLevel, x, y, z);
+        }
+
+        if (opt.crater()) {
+            int r = Math.max(1, Math.round(MINE_CRATER_RADIUS * opt.amplifier()));
+            int d = Math.max(1, Math.round(MINE_CRATER_DEPTH * opt.amplifier()));
+            MinecraftServer server = serverLevel.getServer();
+            if (server != null) {
+                server.tell(new TickTask(server.getTickCount() + 5, () ->
+                        ShockwaveGenerator.generateCrater(
+                                serverLevel, pos, r, d,
+                                ModBlocks.WASTE_LOG.get(),
+                                ModBlocks.WASTE_PLANKS.get(),
+                                ModBlocks.BURNED_GRASS.get(),
+                                opt.damage()
+                        )));
+            }
+        }
+    }
+
+    private static void dealMineExplosionDamage(ServerLevel serverLevel, double x, double y, double z, float amplifier) {
+        float damageRadius = MINE_DAMAGE_RADIUS * amplifier;
+        float damageAmount = MINE_DAMAGE_AMOUNT * amplifier;
+        float maxDist = Math.min(MINE_MAX_DAMAGE_DISTANCE * amplifier, damageRadius);
+
+        List<LivingEntity> entitiesNearby = serverLevel.getEntitiesOfClass(
+                LivingEntity.class,
+                new AABB(x - damageRadius, y - damageRadius, z - damageRadius,
+                        x + damageRadius, y + damageRadius, z + damageRadius)
+        );
+
+        for (LivingEntity entity : entitiesNearby) {
+            double distanceToEntity = Math.sqrt(
+                    Math.pow(entity.getX() - x, 2) +
+                            Math.pow(entity.getY() - y, 2) +
+                            Math.pow(entity.getZ() - z, 2)
+            );
+
+            if (distanceToEntity <= damageRadius) {
+                float damage = damageAmount;
+                if (distanceToEntity > maxDist && damageRadius > maxDist) {
+                    float remainingDistance = damageRadius - maxDist;
+                    float damageDistance = (float) distanceToEntity - maxDist;
+                    damage = damageAmount * (1.0f - (damageDistance / remainingDistance)) * 0.5f;
+                }
+                entity.hurt(entity.damageSources().explosion(null), damage);
+            }
+        }
+    }
+
+    private static void playRandomMineSound(Level level, BlockPos pos) {
+        SoundEvent sound = ModSounds.MUKE_EXPLOSION.orElse(null);
+        if (sound != null) {
+            level.playSound(null, pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5,
+                    sound, SoundSource.BLOCKS, 4.0F, 1.0F);
+        }
+    }
+
+    // --- Grenade nuc ---
+    private static final float GRENADE_EXPLODE_1 = 9.0F;
+    private static final int GRENADE_CRATER_RADIUS = 25;
+    private static final int GRENADE_CRATER_DEPTH = 10;
+    private static final float GRENADE_DAMAGE_RADIUS = 25.0f;
+    private static final float GRENADE_DAMAGE_AMOUNT = 200.0f;
+    private static final float GRENADE_MAX_DAMAGE_DISTANCE = 25.0f;
+    private static final int GRENADE_DETONATION_RADIUS = 8;
+
+    public static void launchGrenadeNuc(ServerLevel serverLevel, BlockPos pos, ExplosionCommandOptions opt, net.minecraft.world.entity.player.Player chainPlayer) {
+        double x = pos.getX() + 0.5;
+        double y = pos.getY() + 0.5;
+        double z = pos.getZ() + 0.5;
+
+        if (opt.damage()) {
+            serverLevel.explode(null, x, y, z, GRENADE_EXPLODE_1 * opt.amplifier(), true, Level.ExplosionInteraction.NONE);
+            triggerNearbyDetonations(serverLevel, pos, chainPlayer);
+            dealGrenadeExplosionDamage(serverLevel, x, y, z, opt.amplifier());
+        }
+
+        if (opt.particles()) {
+            ExplosionParticleUtils.spawnFullNuclearExplosion(serverLevel, x, y, z);
+        }
+
+        if (opt.sound()) {
+            playRandomGrenadeSound(serverLevel, pos);
+        }
+
+        if (opt.crater()) {
+            int r = Math.max(1, Math.round(GRENADE_CRATER_RADIUS * opt.amplifier()));
+            int d = Math.max(1, Math.round(GRENADE_CRATER_DEPTH * opt.amplifier()));
+            final boolean damage = opt.damage();
+            final float amp = opt.amplifier();
+            MinecraftServer server = serverLevel.getServer();
+            if (server != null) {
+                server.tell(new TickTask(server.getTickCount() + 30, () -> {
+                    if (damage) {
+                        serverLevel.explode(null, x, y, z, GRENADE_EXPLODE_1 * amp, Level.ExplosionInteraction.NONE);
+                    }
+                    ShockwaveGenerator.generateCrater(
+                            serverLevel, pos, r, d,
+                            ModBlocks.WASTE_LOG.get(),
+                            ModBlocks.WASTE_PLANKS.get(),
+                            ModBlocks.BURNED_GRASS.get(),
+                            damage
+                    );
+                }));
+            }
+        }
+    }
+
+    private static void dealGrenadeExplosionDamage(ServerLevel serverLevel, double x, double y, double z, float amplifier) {
+        float damageRadius = GRENADE_DAMAGE_RADIUS * amplifier;
+        float damageAmount = GRENADE_DAMAGE_AMOUNT * amplifier;
+        float maxDist = Math.min(GRENADE_MAX_DAMAGE_DISTANCE * amplifier, damageRadius);
+
+        List<LivingEntity> entitiesNearby = serverLevel.getEntitiesOfClass(
+                LivingEntity.class,
+                new AABB(x - damageRadius, y - damageRadius, z - damageRadius,
+                        x + damageRadius, y + damageRadius, z + damageRadius)
+        );
+
+        for (LivingEntity entity : entitiesNearby) {
+            double distanceToEntity = Math.sqrt(
+                    Math.pow(entity.getX() - x, 2) +
+                            Math.pow(entity.getY() - y, 2) +
+                            Math.pow(entity.getZ() - z, 2)
+            );
+
+            if (distanceToEntity <= damageRadius) {
+                float damage = damageAmount;
+                if (distanceToEntity > maxDist && damageRadius > maxDist) {
+                    float remainingDistance = damageRadius - maxDist;
+                    float damageDistance = (float) distanceToEntity - maxDist;
+                    damage = damageAmount * (1.0f - (damageDistance / remainingDistance)) * 0.5f;
+                }
+                entity.hurt(entity.damageSources().explosion(null), damage);
+            }
+        }
+    }
+
+    private static void triggerNearbyDetonations(ServerLevel serverLevel, BlockPos pos, net.minecraft.world.entity.player.Player player) {
+        for (int ox = -GRENADE_DETONATION_RADIUS; ox <= GRENADE_DETONATION_RADIUS; ox++) {
+            for (int oy = -GRENADE_DETONATION_RADIUS; oy <= GRENADE_DETONATION_RADIUS; oy++) {
+                for (int oz = -GRENADE_DETONATION_RADIUS; oz <= GRENADE_DETONATION_RADIUS; oz++) {
+                    double dist = Math.sqrt(ox * ox + oy * oy + oz * oz);
+                    if (dist <= GRENADE_DETONATION_RADIUS && dist > 0) {
+                        BlockPos checkPos = pos.offset(ox, oy, oz);
+                        BlockState checkState = serverLevel.getBlockState(checkPos);
+                        Block block = checkState.getBlock();
+                        if (block instanceof IDetonatable detonatable) {
+                            int delay = (int) (dist * 1.5);
+                            serverLevel.getServer().tell(new TickTask(delay, () ->
+                                    detonatable.onDetonate(serverLevel, checkPos, checkState, player)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static void playRandomGrenadeSound(Level level, BlockPos pos) {
+        List<SoundEvent> sounds = Arrays.asList(
+                ModSounds.MUKE_EXPLOSION.orElse(null),
+                ModSounds.MUKE_EXPLOSION.orElse(null),
+                ModSounds.MUKE_EXPLOSION.orElse(null)
+        );
+        sounds.removeIf(Objects::isNull);
+        if (!sounds.isEmpty()) {
+            SoundEvent sound = sounds.get(RANDOM.nextInt(sounds.size()));
+            level.playSound(null, pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5,
+                    sound, SoundSource.BLOCKS, 4.0F, 1.0F);
+        }
+    }
+}

@@ -1,0 +1,34 @@
+package com.hbm_m.item.industrial;
+
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+
+public class ItemBlades extends Item {
+    private final int maxUses;
+    private final boolean unbreakable;
+
+    public ItemBlades(Properties properties, int maxUses) {
+        super(properties.defaultDurability(maxUses));
+        this.maxUses = maxUses;
+        this.unbreakable = false;
+    }
+
+    public ItemBlades(Properties properties) {
+        super(properties);
+        this.maxUses = 0;
+        this.unbreakable = true;
+    }
+
+    // Forge/NeoForge: stack-sensitive durability (как ModPowerArmorItem).
+    public boolean isDamageable(ItemStack stack) {
+        return !unbreakable;
+    }
+
+    public int getMaxDamage(ItemStack stack) {
+        return unbreakable ? 0 : maxUses;
+    }
+
+    public boolean isUnbreakable() {
+        return unbreakable;
+    }
+}

@@ -1,0 +1,108 @@
+package com.hbm_m.item.radiation_meter;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+
+import com.hbm_m.extprop.HbmLivingProps;
+import com.hbm_m.sound.ModSounds;
+import com.hbm_m.util.ContaminationUtil;
+
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResultHolder;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
+
+/**
+ * Порт {@link com.hbm.items.tool.ItemGeigerCounter} (1.7.10).
+ */
+public class ItemGeigerCounter extends Item {
+
+    private final Random rand = new Random();
+
+    public ItemGeigerCounter(Properties properties) {
+        super(properties);
+    }
+
+    @Override
+    public void inventoryTick(ItemStack stack, Level world, Entity entity, int slot, boolean selected) {
+        if (!(entity instanceof LivingEntity) || world.isClientSide()) {
+            return;
+        }
+
+        float x = HbmLivingProps.getRadBuf((LivingEntity) entity);
+
+        if (world.getGameTime() % 5 == 0) {
+            if (x > 1E-5F) {
+                List<Integer> list = new ArrayList<>();
+
+                if (x < 1) {
+                    list.add(0);
+                }
+                if (x < 5) {
+                    list.add(0);
+                }
+                if (x < 10) {
+                    list.add(1);
+                }
+                if (x > 5 && x < 15) {
+                    list.add(2);
+                }
+                if (x > 10 && x < 20) {
+                    list.add(3);
+                }
+                if (x > 15 && x < 25) {
+                    list.add(4);
+                }
+                if (x > 20 && x < 30) {
+                    list.add(5);
+                }
+                if (x > 25) {
+                    list.add(6);
+                }
+
+                int r = list.get(rand.nextInt(list.size()));
+
+                if (r > 0) {
+                    playGeigerSound(world, entity, r);
+                }
+            } else if (rand.nextInt(50) == 0) {
+                playGeigerSound(world, entity, 1);
+            }
+        }
+    }
+
+    @Override
+    public InteractionResultHolder<ItemStack> use(Level world, Player player, InteractionHand hand) {
+        ItemStack stack = player.getItemInHand(hand);
+
+        if (!world.isClientSide()) {
+            ModSounds.TOOL_TECH_BOOP.ifPresent(sound ->
+                    world.playSound(null, player.getX(), player.getY(), player.getZ(), sound, SoundSource.PLAYERS, 1.0F, 1.0F));
+            ContaminationUtil.printGeigerData(player);
+        }
+
+        return InteractionResultHolder.sidedSuccess(stack, world.isClientSide());
+    }
+
+    private static void playGeigerSound(Level world, Entity entity, int index) {
+        SoundEvent sound = switch (index) {
+            case 1 -> ModSounds.GEIGER_1.orElse(null);
+            case 2 -> ModSounds.GEIGER_2.orElse(null);
+            case 3 -> ModSounds.GEIGER_3.orElse(null);
+            case 4 -> ModSounds.GEIGER_4.orElse(null);
+            case 5 -> ModSounds.GEIGER_5.orElse(null);
+            case 6 -> ModSounds.GEIGER_6.orElse(null);
+            default -> null;
+        };
+        if (sound != null) {
+            world.playSound(null, entity.getX(), entity.getY(), entity.getZ(), sound, SoundSource.PLAYERS, 1.0F, 1.0F);
+        }
+    }
+}
