@@ -3,6 +3,7 @@ package com.hbm_m.creativetabs;
 import java.util.function.Consumer;
 
 import com.hbm_m.item.ModItems;
+import com.hbm_m.worldpeace.WorldPeacePolicy;
 
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
@@ -17,6 +18,9 @@ public final class MissileTab {
     }
 
     public static Item getTabIconItem() {
+        if (!WorldPeacePolicy.allowStrategicMissiles()) {
+            return Items.BARRIER;
+        }
         if (ModItems.MISSILE_NUCLEAR.isPresent()) {
             return ModItems.MISSILE_NUCLEAR.get();
         }

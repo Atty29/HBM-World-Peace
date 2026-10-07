@@ -2,6 +2,7 @@ package com.hbm_m.creativetabs;
 
 import com.hbm_m.block.ModBlocks;
 import com.hbm_m.lib.RefStrings;
+import com.hbm_m.worldpeace.WorldPeacePolicy;
 
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.CreativeModeTab;
@@ -22,6 +23,9 @@ public final class NukeTab {
     }
 
     public static Item getTabIconItem() {
+        if (!WorldPeacePolicy.allowBombCreativeContent()) {
+            return Items.BARRIER;
+        }
         if (ModBlocks.NUKE_FAT_MAN.isPresent()) {
             return ModBlocks.NUKE_FAT_MAN.get().asItem();
         }

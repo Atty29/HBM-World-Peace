@@ -17,8 +17,8 @@ public class ModClothConfig {
     // ════════════════════════════════════════════════════════════════
     // Общие настройки
     // ════════════════════════════════════════════════════════════════
-    public boolean enableRadiation = true;
-    public boolean enableChunkRads = true;
+    public boolean enableRadiation = false;
+    public boolean enableChunkRads = false;
 
     /** MOTD при входе в мир и уведомление о новой версии на Modrinth (ориг. GeneralConfig.enableMOTD). */
     public boolean enableMOTD = true;
@@ -27,16 +27,16 @@ public class ModClothConfig {
     // Эффекты мира
     // ════════════════════════════════════════════════════════════════
     /** Частицы радиоактивного тумана в чанках (порог/шанс — ChunkRadiationHandlerSimple, как fogRad/fogCh в 1.7.10). */
-    public boolean enableRadFogEffect = true;
+    public boolean enableRadFogEffect = false;
 
     /** Как RadiationConfig.worldRadEffects (1.7.10). Пороги/частота — константы в ChunkRadiationHandlerSimple. */
-    public boolean worldRadEffects = true;
+    public boolean worldRadEffects = false;
 
     /** Следы блока taint под сущностями с эффектом порчи (ориг. ServerConfig.TAINT_TRAILS, по умолчанию выкл.). */
     public boolean taintTrails = false;
 
     /** Включает смену биома при ядерном взрыве (ориг. WorldConfig.enableCraterBiomes). */
-    public boolean enableCraterBiomes = true;
+    public boolean enableCraterBiomes = false;
     /** RAD/s для игрока в inner_crater биоме (1.7.10 WorldConfig.craterBiomeInnerRad). */
     public float craterBiomeInnerRad = 25F;
     /** RAD/s для игрока в crater биоме (1.7.10 WorldConfig.craterBiomeRad). */
@@ -50,10 +50,10 @@ public class ModClothConfig {
     // Оружие / падение предметов
     // ════════════════════════════════════════════════════════════════
     /** Спавн сингулярностей/чёрных дыр при падении предмета (WeaponConfig.dropSing). */
-    public boolean dropSingularity = true;
+    public boolean dropSingularity = false;
 
     /** Взрыв антиматерии при падении ячейки/пеллета (WeaponConfig.dropCell). */
-    public boolean dropCell = true;
+    public boolean dropCell = false;
 
     // ════════════════════════════════════════════════════════════════
     // Игрок (радиация)
@@ -111,7 +111,7 @@ public class ModClothConfig {
     public int modelStaticRenderDistance = 8;
 
     /** Server → client pose sync for ballistic missiles (independent of client chunk loading). */
-    public boolean enableMissileNetworkTrack = true;
+    public boolean enableMissileNetworkTrack = false;
     public int missileTrackMaxRangeBlocks = 0;
     public int missileTrackInterval = 1;
 

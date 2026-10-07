@@ -22,6 +22,7 @@ import com.hbm_m.item.liquids.FluidIdentifierItem;
 import com.hbm_m.item.tags_and_tiers.ModIngots;
 import com.hbm_m.item.tags_and_tiers.ModPowders;
 import com.hbm_m.platform.PlatformHooks;
+import com.hbm_m.worldpeace.WorldPeacePolicy;
 
 import dev.architectury.registry.registries.RegistrySupplier;
 import dev.architectury.utils.Env;
@@ -164,15 +165,22 @@ public final class CreativeModeTabEventHandler {
     public static void populateSpawnEggs(BiConsumer<ItemStack, CreativeModeTab.TabVisibility> acceptor) {
         Consumer<ItemStack> add = stack -> acceptor.accept(stack, CreativeModeTab.TabVisibility.PARENT_AND_SEARCH_TABS);
         add.accept(new ItemStack(ModItems.NOLO_SPAWN_EGG.get()));
-        add.accept(new ItemStack(ModItems.ENTITY_MOB_TAINTED_CREEPER_SPAWN_EGG.get()));
+        if (WorldPeacePolicy.allowExoticDestruction()) {
+            add.accept(new ItemStack(ModItems.ENTITY_MOB_TAINTED_CREEPER_SPAWN_EGG.get()));
+        }
         add.accept(new ItemStack(ModItems.ENTITY_MOB_GOLD_CREEPER_SPAWN_EGG.get()));
         add.accept(new ItemStack(ModItems.ENTITY_MOB_VOLATILE_CREEPER_SPAWN_EGG.get()));
         add.accept(new ItemStack(ModItems.ENTITY_MOB_PHOSGENE_CREEPER_SPAWN_EGG.get()));
-        add.accept(new ItemStack(ModItems.ENTITY_MOB_NUCLEAR_CREEPER_SPAWN_EGG.get()));
+        if (WorldPeacePolicy.allowNuclearWeapons()) {
+            add.accept(new ItemStack(ModItems.ENTITY_MOB_NUCLEAR_CREEPER_SPAWN_EGG.get()));
+        }
     }
 
     /** Ракеты и спутники (порядок из GIT {@code MainRegistry.missileTab}). */
     public static void populateMissilesTab(BiConsumer<ItemStack, CreativeModeTab.TabVisibility> acceptor) {
+        if (!WorldPeacePolicy.allowStrategicMissiles()) {
+            return;
+        }
         Consumer<ItemStack> add = stack -> acceptor.accept(stack, CreativeModeTab.TabVisibility.PARENT_AND_SEARCH_TABS);
 
         add.accept(new ItemStack(ModBlocks.LAUNCH_PAD.get()));
@@ -218,6 +226,9 @@ public final class CreativeModeTabEventHandler {
 
     /** Бомбы (порядок из GIT {@code MainRegistry.nukeTab}). */
     public static void populateNukeTab(BiConsumer<ItemStack, CreativeModeTab.TabVisibility> acceptor) {
+        if (!WorldPeacePolicy.allowBombCreativeContent()) {
+            return;
+        }
         Set<String> seen = new HashSet<>();
         Consumer<ItemStack> add = stack -> {
             if (stack == null || stack.isEmpty()) {
@@ -235,14 +246,11 @@ public final class CreativeModeTabEventHandler {
         add.accept(new ItemStack(ModBlocks.NUKE_FAT_MAN.get()));
         // add.accept(new ItemStack(ModBlocks.NUKE_PROTOTYPE.get()));
         add.accept(new ItemStack(ModBlocks.DUD_CONVENTIONAL.get()));
-        add.accept(new ItemStack(ModBlocks.DUD_NUKE.get()));
-        add.accept(new ItemStack(ModBlocks.DUD_SALTED.get()));
         add.accept(new ItemStack(ModBlocks.C4.get()));
         add.accept(new ItemStack(ModBlocks.MINE_AP.get()));
         add.accept(new ItemStack(ModBlocks.MINE_FAT.get()));
         add.accept(new ItemStack(ModBlocks.NAVAL_MINE.get()));
         add.accept(new ItemStack(ModBlocks.EXPLOSIVE_CHARGE.get()));
-        add.accept(new ItemStack(ModBlocks.NUCLEAR_CHARGE.get()));
         add.accept(new ItemStack(ModBlocks.DET_MINER.get()));
         add.accept(new ItemStack(ModBlocks.BARREL_RED.get()));
         add.accept(new ItemStack(ModBlocks.BARREL_PINK.get()));
@@ -343,8 +351,6 @@ public final class CreativeModeTabEventHandler {
         // add.accept(new ItemStack(ModItems.AMMO_TAU_URANIUM.get()));
         // add.accept(new ItemStack(ModItems.AMMO_FLAME_DIESEL.get()));
         // add.accept(new ItemStack(ModBlocks.MACHINE_MISSILE_ASSEMBLY.get()));
-        add.accept(new ItemStack(ModItems.MISSILE_FUSELAGE.get()));
-        add.accept(new ItemStack(ModItems.MISSILE_CHIP.get()));
         add.accept(new ItemStack(ModItems.GRENADE.get()));
         add.accept(new ItemStack(ModItems.GRENADEHE.get()));
         add.accept(new ItemStack(ModItems.GRENADEFIRE.get()));
@@ -354,7 +360,6 @@ public final class CreativeModeTabEventHandler {
         add.accept(new ItemStack(ModItems.GRENADE_IF_HE.get()));
         add.accept(new ItemStack(ModItems.GRENADE_IF_SLIME.get()));
         add.accept(new ItemStack(ModItems.GRENADE_IF_FIRE.get()));
-        add.accept(new ItemStack(ModItems.GRENADE_NUC.get()));
         // add.accept(new ItemStack(ModItems.CELL_SAS3.get()));
         // add.accept(new ItemStack(ModItems.ROD_QUAD_LEAD.get()));
         // add.accept(new ItemStack(ModItems.ROD_QUAD_NP237.get()));
@@ -362,16 +367,11 @@ public final class CreativeModeTabEventHandler {
         add.accept(new ItemStack(ModBlocks.AIRBOMB.get()));
         add.accept(new ItemStack(ModItems.AIRBOMB_A.get()));
         add.accept(new ItemStack(ModBlocks.BALEBOMB_TEST.get()));
-        add.accept(new ItemStack(ModItems.AIRNUKEBOMB_A.get()));
         add.accept(new ItemStack(ModBlocks.GIGA_DET.get()));
         add.accept(new ItemStack(ModBlocks.WASTE_CHARGE.get()));
         add.accept(new ItemStack(ModBlocks.SMOKE_BOMB.get()));
         add.accept(new ItemStack(ModBlocks.EXPLOSIVE_CHARGE.get()));
-        add.accept(new ItemStack(ModBlocks.NUCLEAR_CHARGE.get()));
         add.accept(new ItemStack(ModBlocks.DUD_CONVENTIONAL.get()));
-        add.accept(new ItemStack(ModBlocks.DUD_NUKE.get()));
-        add.accept(new ItemStack(ModBlocks.DUD_SALTED.get()));
-        add.accept(new ItemStack(ModItems.MISSILE_TEST.get()));
     }
 
     // БРОНЯ И ИНСТРУМЕНТЫ

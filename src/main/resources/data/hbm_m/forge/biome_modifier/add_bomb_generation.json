@@ -3,9 +3,7 @@
   "biomes": "#minecraft:is_overworld",
   "features": [
     "hbm_m:mine_ap",
-    "hbm_m:dud_conventional",
-    "hbm_m:dud_salted",
-    "hbm_m:dud_nuke"
+    "hbm_m:dud_conventional"
   ],
   "step": "surface_structures"
 }

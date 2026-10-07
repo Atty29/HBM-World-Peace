@@ -28,6 +28,7 @@ import com.hbm_m.inventory.fluid.tank.FluidTank;
 import com.hbm_m.item.ModItems;
 import com.hbm_m.item.fekal_electric.ItemCreativeBattery;
 import com.hbm_m.item.missile.MissileItem;
+import com.hbm_m.worldpeace.WorldPeacePolicy;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -106,6 +107,9 @@ public abstract class LaunchPadBaseBlockEntity extends BaseMachineBlockEntity
      */
     public static void registerLaunchables() {
         MISSILES.clear();
+        if (!WorldPeacePolicy.allowStrategicMissiles()) {
+            return;
+        }
 
         MISSILES.put(ModItems.MISSILE_TEST.get(), ModEntities.MISSILE_TEST.get());
         MISSILES.put(ModItems.MISSILE_ABM.get(), ModEntities.MISSILE_ABM.get());
