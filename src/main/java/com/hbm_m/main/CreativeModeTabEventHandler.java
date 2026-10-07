@@ -371,10 +371,7 @@ public final class CreativeModeTabEventHandler {
         add.accept(new ItemStack(ModBlocks.WASTE_CHARGE.get()));
         add.accept(new ItemStack(ModBlocks.SMOKE_BOMB.get()));
         add.accept(new ItemStack(ModBlocks.EXPLOSIVE_CHARGE.get()));
-        add.accept(new ItemStack(ModBlocks.NUCLEAR_CHARGE.get()));
         add.accept(new ItemStack(ModBlocks.DUD_CONVENTIONAL.get()));
-        add.accept(new ItemStack(ModBlocks.DUD_NUKE.get()));
-        add.accept(new ItemStack(ModBlocks.DUD_SALTED.get()));
     }
 
     // БРОНЯ И ИНСТРУМЕНТЫ
