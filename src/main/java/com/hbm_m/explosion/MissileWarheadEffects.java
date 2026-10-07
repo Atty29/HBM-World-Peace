@@ -16,6 +16,7 @@ import com.hbm_m.particle.ModParticleTypes;
 import com.hbm_m.particle.explosions.ServerExplosionParticles;
 import com.hbm_m.particle.explosions.basic.ExplosionParticleUtils;
 import com.hbm_m.particle.helper.ExplosionCreator;
+import com.hbm_m.worldpeace.WorldPeacePolicy;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.core.particles.ParticleTypes;
@@ -52,6 +53,9 @@ public final class MissileWarheadEffects {
 
     /** 1.7.10 {@code EntityMissileBHole#onMissileImpact}: взрыв 1.5 + чёрная дыра 1.5. */
     public static void blackHole(Level level, double x, double y, double z) {
+        if (!WorldPeacePolicy.allowExoticDestruction()) {
+            return;
+        }
         level.explode(null, x, y, z, 1.5F, true, Level.ExplosionInteraction.BLOCK);
         BlackHoleEntity hole = new BlackHoleEntity(ModEntities.BLACK_HOLE.get(), level);
         hole.setPos(x, y, z);
@@ -60,6 +64,9 @@ public final class MissileWarheadEffects {
     }
 
     public static void scatterTaint(Level level, BlockPos center) {
+        if (!WorldPeacePolicy.allowExoticDestruction()) {
+            return;
+        }
         level.explode(null, center.getX() + 0.5D, center.getY() + 0.5D, center.getZ() + 0.5D,
                 5.0F, Level.ExplosionInteraction.BLOCK);
 
