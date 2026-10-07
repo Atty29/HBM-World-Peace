@@ -5,6 +5,7 @@ import com.hbm_m.entity.ModEntities;
 import com.hbm_m.entity.effect.EntityCloudFleija;
 import com.hbm_m.entity.logic.EntityNukeExplosionMK3;
 import com.hbm_m.util.WorldUtil;
+import com.hbm_m.worldpeace.WorldPeacePolicy;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
@@ -24,6 +25,9 @@ public final class FleijaExplosionAPI {
     }
 
     public static EntityNukeExplosionMK3 start(Level level, double x, double y, double z, int radius) {
+        if (!WorldPeacePolicy.allowExoticDestruction()) {
+            return null;
+        }
         if (level.isClientSide) {
             return null;
         }
