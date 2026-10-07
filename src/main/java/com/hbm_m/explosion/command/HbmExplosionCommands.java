@@ -7,6 +7,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
+import com.hbm_m.worldpeace.WorldPeacePolicy;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
@@ -45,7 +46,7 @@ public final class HbmExplosionCommands {
 
     public static LiteralArgumentBuilder<CommandSourceStack> buildExplosionBranch() {
         return Commands.literal("explosion")
-                .requires(src -> src.hasPermission(2))
+                .requires(src -> WorldPeacePolicy.allowCatastrophicExplosionCommands() && src.hasPermission(2))
                 .then(Commands.argument("type", StringArgumentType.word())
                         .suggests(EXPLOSION_TYPE_SUGGESTIONS)
                         .executes(ctx -> runAtSource(ctx, ExplosionCommandOptions.DEFAULT))
