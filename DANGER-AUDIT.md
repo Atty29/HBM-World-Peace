@@ -770,3 +770,12 @@ If yes, keep it where practical.
 If its primary purpose is to destroy players, bases, chunks, biomes or worlds, remove it.
 
 If it is useful engineering but can cause catastrophic damage, keep the engineering and replace the catastrophe with a bounded, repairable failure.
+
+
+## Phase 1A implementation status
+
+Phase 1A is implemented on the `phase1a-world-peace-policy` branch.
+
+The first policy layer disables strategic missile launch registration, nuclear/bomb and missile creative access, catastrophic explosion commands, FLEIJA/black-hole/taint destructive entry points, and nuclear/salted dud worldgen while preserving upstream registries/classes for compatibility. Existing radiation-related configuration defaults are changed to the World Peace-safe state, but complete radiation enforcement remains Phase 2.
+
+See `docs/PHASE-1A.md` for the exact boundary.
