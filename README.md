@@ -8,9 +8,9 @@ The goal is to preserve the industrial side of HBM — machines, metallurgy, che
 
 ## Current status
 
-**Phase 0 — upstream baseline import.**
+**Phase 1A — World Peace safety policy.**
 
-The gameplay source in this baseline is intentionally still the audited upstream implementation. No World Peace safety changes are claimed until later commits apply the rules in [`DANGER-AUDIT.md`](DANGER-AUDIT.md).
+Phase 0 established the verified upstream build baseline. Phase 1A now disables normal access to strategic missiles, nuclear weapons and exotic catastrophic destruction while keeping upstream registries/classes intact for compatibility. See [`docs/PHASE-1A.md`](docs/PHASE-1A.md) and [`DANGER-AUDIT.md`](DANGER-AUDIT.md).
 
 The baseline was imported from `Raptor324/HBM-Modernized` commit:
 
